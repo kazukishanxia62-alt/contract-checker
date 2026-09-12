@@ -1,336 +1,235 @@
 
 import streamlit as st
 from PIL import Image, ImageOps
-import numpy as np
-import cv2
-import pandas as pd
+from io import BytesIO
+import base64
+import json
+from openai import OpenAI
 
-# HEIC対応（入っていれば有効化）
-try:
-    from pillow_heif import register_heif_opener
-    register_heif_opener()
-except Exception:
-    pass
+st.set_page_config(page_title="契約書AIチェック", page_icon="✅", layout="centered")
+st.title("契約書 AI記入漏れチェック")
+st.caption("写真をAIが直接見て、指定項目の記入有無を確認します。")
 
-st.set_page_config(page_title="契約書チェック", page_icon="✅", layout="wide")
-
-st.title("契約書 記入漏れチェック")
-st.caption("スマホ撮影 → 用紙自動補正 → 記入漏れチェック")
 st.warning(
-    "この試作は提出前の補助チェックです。契約可否や法的判断は行いません。"
-    "実データ運用前に会社の承認・情報管理確認が必要です。"
+    "これは提出前の補助チェック用です。最終確認は人が行ってください。"
+    "実際の顧客契約書を扱う前に、会社の情報セキュリティ・個人情報取扱ルールを確認してください。"
 )
 
-TARGET_W = 1536
-TARGET_H = 1152
+# Streamlit Secrets からAPIキーを読む
+try:
+    client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+except Exception:
+    st.error("OPENAI_API_KEY が設定されていません。StreamlitのSecretsにAPIキーを登録してください。")
+    st.stop()
 
-# ここは「正面に補正された契約書」を基準に見る位置
-CHECKS = {
-    "1枚目（役務事業者控）": {
-        "役務提供期間": {"roi": (170, 785, 560, 870), "mode": "blue"},
-        "受領サイン": {"roi": (1215, 150, 1400, 205), "mode": "dark"},
-        "数量計": {"roi": (775, 570, 845, 800), "mode": "blue"},
-    },
-    "2枚目（クレジット契約書）": {
-        "提供期間等": {"roi": (1000, 235, 1145, 285), "mode": "blue"},
-        "特定商取引法42条欄": {"roi": (1170, 150, 1385, 255), "mode": "blue"},
-        "フリガナ": {"roi": (150, 115, 420, 165), "mode": "blue"},
-        "ヶ月": {"roi": (420, 355, 650, 440), "mode": "blue"},
-    },
+MODEL = "gpt-5.4-mini"
+
+CHECK_ITEMS = {
+    "1枚目": [
+        ("役務提供期間", "『役務提供期間』または同等の期間記入欄に、日付・期間が手書き等で記入されているか"),
+        ("受領サイン", "受領サイン・受領確認サイン欄に署名または記名があるか。黒ペンでもよい"),
+        ("数量計", "数量の合計・数量計の欄に数値が記入されているか"),
+    ],
+    "2枚目": [
+        ("提供期間等", "『提供期間等』『提供期間』等の欄に期間・日付が記入されているか"),
+        ("特定商取引法42条欄", "特定商取引法42条に関する指定欄に必要な記入があるか"),
+        ("フリガナ", "契約者等のフリガナ欄にフリガナが記入されているか"),
+        ("ヶ月", "支払回数・契約期間等の『ヶ月』に対応する数値欄が記入されているか"),
+    ],
 }
 
-def order_points(pts):
-    pts = np.array(pts, dtype="float32")
-    rect = np.zeros((4, 2), dtype="float32")
-    s = pts.sum(axis=1)
-    diff = np.diff(pts, axis=1).reshape(-1)
-    rect[0] = pts[np.argmin(s)]      # top-left
-    rect[2] = pts[np.argmax(s)]      # bottom-right
-    rect[1] = pts[np.argmin(diff)]   # top-right
-    rect[3] = pts[np.argmax(diff)]   # bottom-left
-    return rect
-
-def four_point_transform(image_rgb, pts):
-    rect = order_points(pts)
-    dst = np.array([
-        [0, 0],
-        [TARGET_W - 1, 0],
-        [TARGET_W - 1, TARGET_H - 1],
-        [0, TARGET_H - 1],
-    ], dtype="float32")
-    M = cv2.getPerspectiveTransform(rect, dst)
-    warped = cv2.warpPerspective(image_rgb, M, (TARGET_W, TARGET_H))
-    return warped
-
-def detect_document(image_rgb):
-    """
-    写真内で一番大きい「紙らしい四角形」を探して正面補正する。
-    見つからない時は、最大輪郭の回転矩形で補正を試みる。
-    """
-    h0, w0 = image_rgb.shape[:2]
-    scale = 1200 / max(h0, w0)
-    if scale < 1:
-        small = cv2.resize(image_rgb, (int(w0 * scale), int(h0 * scale)))
-    else:
-        small = image_rgb.copy()
-        scale = 1.0
-
-    gray = cv2.cvtColor(small, cv2.COLOR_RGB2GRAY)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)
-
-    # 白い紙を拾いやすくする
-    edges = cv2.Canny(gray, 45, 140)
-    edges = cv2.dilate(edges, np.ones((3,3), np.uint8), iterations=1)
-
-    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)
-
-    img_area = small.shape[0] * small.shape[1]
-    candidate = None
-
-    for c in contours[:30]:
-        area = cv2.contourArea(c)
-        if area < img_area * 0.08:
-            continue
-        peri = cv2.arcLength(c, True)
-        approx = cv2.approxPolyDP(c, 0.02 * peri, True)
-        if len(approx) == 4:
-            pts = approx.reshape(4, 2).astype("float32")
-            candidate = pts
-            break
-
-    if candidate is None and contours:
-        # fallback: 最大輪郭を回転矩形にする
-        for c in contours[:10]:
-            area = cv2.contourArea(c)
-            if area >= img_area * 0.08:
-                rect = cv2.minAreaRect(c)
-                candidate = cv2.boxPoints(rect).astype("float32")
-                break
-
-    if candidate is None:
-        return None, None
-
-    pts_full = candidate / scale
-    warped = four_point_transform(image_rgb, pts_full)
-
-    # 横長の契約書を想定。縦長になった場合は90度回転
-    if warped.shape[0] > warped.shape[1]:
-        warped = cv2.rotate(warped, cv2.ROTATE_90_CLOCKWISE)
-        warped = cv2.resize(warped, (TARGET_W, TARGET_H))
-
-    return warped, pts_full
-
-def load_image(uploaded):
+def image_to_data_url(uploaded):
     img = Image.open(uploaded)
     img = ImageOps.exif_transpose(img).convert("RGB")
-    return np.array(img)
 
-def blue_mask(crop_rgb):
-    hsv = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2HSV)
-    lower = np.array([85, 30, 30])
-    upper = np.array([145, 255, 255])
-    mask = cv2.inRange(hsv, lower, upper)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((2,2), np.uint8))
-    return mask
+    # API送信量を抑えつつ文字を読めるサイズを確保
+    max_side = 2200
+    if max(img.size) > max_side:
+        ratio = max_side / max(img.size)
+        img = img.resize((int(img.width * ratio), int(img.height * ratio)))
 
-def dark_handwriting_mask(crop_rgb):
-    gray = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2GRAY)
+    buf = BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    return f"data:image/jpeg;base64,{b64}", img
 
-    # 黒系文字
-    binary = cv2.threshold(gray, 115, 255, cv2.THRESH_BINARY_INV)[1]
-    h, w = binary.shape
+def make_schema(item_names):
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "contract_check",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "document_quality": {
+                        "type": "string",
+                        "enum": ["good", "usable", "poor"]
+                    },
+                    "items": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string", "enum": item_names},
+                                "status": {
+                                    "type": "string",
+                                    "enum": ["filled", "missing", "uncertain"]
+                                },
+                                "observed_value": {"type": "string"},
+                                "reason": {"type": "string"}
+                            },
+                            "required": ["name", "status", "observed_value", "reason"],
+                            "additionalProperties": False
+                        }
+                    }
+                },
+                "required": ["document_quality", "items"],
+                "additionalProperties": False
+            }
+        }
+    }
 
-    # 罫線を除去
-    hk = cv2.getStructuringElement(cv2.MORPH_RECT, (max(12, w // 3), 1))
-    vk = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(10, h // 2)))
-    hlines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, hk)
-    vlines = cv2.morphologyEx(binary, cv2.MORPH_OPEN, vk)
+def check_with_ai(uploaded, page_name):
+    data_url, preview = image_to_data_url(uploaded)
+    items = CHECK_ITEMS[page_name]
 
-    cleaned = cv2.subtract(binary, hlines)
-    cleaned = cv2.subtract(cleaned, vlines)
-    cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, np.ones((2,2), np.uint8))
-    return cleaned
-
-def analyze_roi(rectified_rgb, item, blue_threshold):
-    x1, y1, x2, y2 = item["roi"]
-    crop = rectified_rgb[y1:y2, x1:x2]
-    mode = item["mode"]
-
-    if crop.size == 0:
-        return 0.0, False, None, None
-
-    if mode == "blue":
-        mask = blue_mask(crop)
-        ratio = float((mask > 0).mean())
-        detected = ratio >= blue_threshold
-    else:
-        mask = dark_handwriting_mask(crop)
-        ratio = float((mask > 0).mean())
-        detected = ratio >= 0.03
-
-    overlay = crop.copy()
-    overlay[mask > 0] = (255, 70, 70)
-    return ratio, detected, Image.fromarray(crop), Image.fromarray(overlay)
-
-def check_document(uploaded, checks, blue_threshold):
-    raw = load_image(uploaded)
-    rectified, corners = detect_document(raw)
-
-    if rectified is None:
-        # 最後のfallback
-        rectified = cv2.resize(raw, (TARGET_W, TARGET_H))
-        auto_corrected = False
-    else:
-        auto_corrected = True
-
-    results = []
-    for name, item in checks.items():
-        ratio, detected, crop, overlay = analyze_roi(rectified, item, blue_threshold)
-        results.append({
-            "項目": name,
-            "判定": "✅ 記入あり" if detected else "❌ 要確認",
-            "検出方式": "黒ペン" if item["mode"] == "dark" else "青ペン",
-            "検出率": round(ratio * 100, 3),
-            "_crop": crop,
-            "_overlay": overlay,
-        })
-
-    return raw, rectified, auto_corrected, results
-
-def pick_input(label, key_prefix):
-    st.markdown(f"### {label}")
-    mode = st.radio(
-        f"{label}の入力方法",
-        ["写真ライブラリ", "今撮影する"],
-        horizontal=True,
-        key=f"{key_prefix}_mode",
-        label_visibility="collapsed",
+    checklist_text = "\n".join(
+        [f"- {name}: {desc}" for name, desc in items]
     )
 
-    if mode == "写真ライブラリ":
-        return st.file_uploader(
-            "写真を選択",
-            type=["jpg", "jpeg", "png", "heic", "heif"],
-            key=f"{key_prefix}_file",
-        )
-    else:
-        return st.camera_input(
-            "カメラで撮影",
-            key=f"{key_prefix}_camera",
-        )
+    prompt = f"""
+あなたは日本語の契約書画像の「記入漏れチェック」を行う検査担当です。
+この画像について、下記の項目だけを確認してください。
 
-with st.sidebar:
-    st.header("判定設定")
-    threshold_pct = st.slider(
-        "青インク検出しきい値（%）",
-        0.01, 1.00, 0.12, 0.01,
-        help="青ペン欄だけに使います。"
+{checklist_text}
+
+重要ルール:
+1. 印刷済みの文字があるだけでは「記入あり」にしないでください。
+2. 手書き、押印、署名、入力済み数値など、実際に欄が埋められているかを見てください。
+3. 項目名の位置が多少ずれていても、書類全体から意味的に該当欄を探してください。
+4. 読み取れない、欄を特定できない、写真が不鮮明な場合は missing ではなく uncertain にしてください。
+5. observed_value には読めた内容を短く記載してください。読めない場合は空文字にしてください。
+6. reason は日本語で簡潔に書いてください。
+7. 指定項目以外については判定しないでください。
+"""
+
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": data_url,
+                            "detail": "high"
+                        }
+                    }
+                ]
+            }
+        ],
+        response_format=make_schema([x[0] for x in items]),
     )
-    blue_threshold = threshold_pct / 100
-    st.caption("受領サインは黒ペン専用ロジックです。")
-    st.divider()
-    st.markdown("**今回の改良**")
-    st.write("・用紙の四隅を自動検出")
-    st.write("・斜め撮影を正面補正")
-    st.write("・余白や背景を除外")
-    st.write("・写真ライブラリ / カメラ対応")
 
-c1, c2 = st.columns(2)
-with c1:
-    f1 = pick_input("1枚目", "doc1")
-with c2:
-    f2 = pick_input("2枚目", "doc2")
+    raw = response.choices[0].message.content
+    result = json.loads(raw)
+    return result, preview
 
-if st.button("🔍 自動チェック", type="primary", use_container_width=True):
-    if not f1 and not f2:
-        st.error("少なくとも1枚選択または撮影してください。")
-    else:
-        all_rows = []
-        blocks = []
+def display_result(page_name, result, preview):
+    st.subheader(page_name)
+    st.image(preview, use_container_width=True)
 
-        if f1:
-            raw, rectified, corrected, res = check_document(
-                f1, CHECKS["1枚目（役務事業者控）"], blue_threshold
-            )
-            blocks.append(("1枚目", raw, rectified, corrected, res))
-            for r in res:
-                all_rows.append({
-                    "書類": "1枚目",
-                    "項目": r["項目"],
-                    "判定": r["判定"],
-                    "方式": r["検出方式"],
-                    "検出率(%)": r["検出率"],
-                })
+    quality_labels = {
+        "good": "✅ 画像品質：良好",
+        "usable": "🟡 画像品質：判定可能",
+        "poor": "🔴 画像品質：不十分",
+    }
+    st.caption(quality_labels.get(result["document_quality"], ""))
 
-        if f2:
-            raw, rectified, corrected, res = check_document(
-                f2, CHECKS["2枚目（クレジット契約書）"], blue_threshold
-            )
-            blocks.append(("2枚目", raw, rectified, corrected, res))
-            for r in res:
-                all_rows.append({
-                    "書類": "2枚目",
-                    "項目": r["項目"],
-                    "判定": r["判定"],
-                    "方式": r["検出方式"],
-                    "検出率(%)": r["検出率"],
-                })
+    missing = 0
+    uncertain = 0
 
-        df = pd.DataFrame(all_rows)
-        ng = int(df["判定"].str.contains("要確認").sum())
-
-        if ng == 0:
-            st.success("指定したチェック項目はすべて『記入あり』判定です。")
+    for item in result["items"]:
+        if item["status"] == "filled":
+            icon = "✅"
+            label = "記入あり"
+        elif item["status"] == "missing":
+            icon = "❌"
+            label = "未記入"
+            missing += 1
         else:
-            st.error(f"要確認が {ng} 項目あります。提出前に確認してください。")
+            icon = "⚠️"
+            label = "要確認"
+            uncertain += 1
 
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        with st.container(border=True):
+            st.markdown(f"### {icon} {item['name']}：{label}")
+            if item["observed_value"]:
+                st.write(f"読み取った内容：**{item['observed_value']}**")
+            st.caption(item["reason"])
 
-        st.subheader("用紙補正結果")
-        for name, raw, rectified, corrected, res in blocks:
-            with st.expander(f"{name}：補正画像と判定箇所", expanded=True):
-                st.caption(
-                    "✅ 用紙を自動検出して正面補正しました"
-                    if corrected else
-                    "⚠️ 用紙の自動検出に失敗したため、画像全体をそのまま使用しました"
+    return missing, uncertain
+
+st.markdown("### 写真を選択")
+col1, col2 = st.columns(2)
+
+with col1:
+    file1 = st.file_uploader(
+        "1枚目",
+        type=["jpg", "jpeg", "png"],
+        key="page1"
+    )
+with col2:
+    file2 = st.file_uploader(
+        "2枚目",
+        type=["jpg", "jpeg", "png"],
+        key="page2"
+    )
+
+st.info(
+    "ポイント：契約書の四隅が入るように撮影してください。"
+    "多少の傾きや背景はそのままで構いません。"
+)
+
+if st.button("🤖 AIでチェックする", type="primary", use_container_width=True):
+    if not file1 and not file2:
+        st.error("写真を1枚以上選んでください。")
+    else:
+        total_missing = 0
+        total_uncertain = 0
+
+        try:
+            if file1:
+                with st.spinner("1枚目をAIが確認しています…"):
+                    result1, preview1 = check_with_ai(file1, "1枚目")
+                m, u = display_result("1枚目", result1, preview1)
+                total_missing += m
+                total_uncertain += u
+
+            if file2:
+                with st.spinner("2枚目をAIが確認しています…"):
+                    result2, preview2 = check_with_ai(file2, "2枚目")
+                m, u = display_result("2枚目", result2, preview2)
+                total_missing += m
+                total_uncertain += u
+
+            st.divider()
+
+            if total_missing == 0 and total_uncertain == 0:
+                st.success("指定項目はすべて記入ありと判定されました。")
+            elif total_missing > 0:
+                st.error(
+                    f"未記入の可能性がある項目が {total_missing} 件あります。"
+                    f" 要確認は {total_uncertain} 件です。"
                 )
-                cc1, cc2 = st.columns(2)
-                with cc1:
-                    st.image(raw, caption="元の写真", use_container_width=True)
-                with cc2:
-                    st.image(rectified, caption="自動補正後", use_container_width=True)
+            else:
+                st.warning(
+                    f"未記入判定はありませんが、要確認が {total_uncertain} 件あります。"
+                )
 
-                st.markdown("#### 判定箇所")
-                for r in res:
-                    a, b = st.columns([1, 2])
-                    with a:
-                        st.markdown(f"**{r['項目']}**")
-                        st.write(r["判定"])
-                        st.caption(
-                            f"{r['検出方式']} / 検出率 {r['検出率']}%"
-                        )
-                    with b:
-                        if r["_overlay"] is not None:
-                            st.image(
-                                r["_overlay"],
-                                caption="赤＝記入として検出した部分",
-                                use_container_width=True,
-                            )
-
-st.divider()
-st.markdown("""
-### この版で改善したこと
-- 契約書が写真の中央にない場合でも、用紙の四隅を探します
-- 斜め・台形になった写真を正面向きに補正します
-- 黒い背景や大きな余白があっても、契約書だけを切り出してから判定します
-- iPhoneから「写真ライブラリ」または「今撮影する」を選べます
-
-### まだ注意が必要なケース
-- 用紙の一部が画面外に切れている
-- 影が強く、用紙の輪郭が消えている
-- 契約書が極端に小さく写っている
-- スクリーンショット内に写真アプリUIまで含まれている
-
-その場合は「契約書の四隅が全部写る」「できるだけ真正面から」の写真が最も安定します。
-""")
+        except Exception as e:
+            st.error("AI判定中にエラーが発生しました。")
+            st.code(str(e))

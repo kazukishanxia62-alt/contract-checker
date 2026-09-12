@@ -3,6 +3,7 @@ from PIL import Image, ImageOps
 from io import BytesIO
 import base64
 import json
+import re
 from openai import OpenAI
 
 
@@ -19,14 +20,13 @@ st.set_page_config(
 st.title("契約書 AI記入漏れチェック")
 
 st.caption(
-    "契約書の写真をAIが確認し、"
+    "契約書の写真をAIで読み取り、"
     "記入漏れ・条件違反・要注意項目をチェックします。"
 )
 
 st.warning(
-    "これは提出前の補助チェック用です。最終確認は人が行ってください。"
-    "実際の顧客契約書を扱う前に、会社の情報セキュリティ・"
-    "個人情報取扱ルールを確認してください。"
+    "これは提出前の補助チェック用です。"
+    "最終確認は必ず人が行ってください。"
 )
 
 
@@ -38,14 +38,10 @@ try:
     client = OpenAI(
         api_key=st.secrets["OPENAI_API_KEY"]
     )
-
 except Exception:
-
     st.error(
         "OPENAI_API_KEY が設定されていません。"
-        "StreamlitのSecretsにAPIキーを登録してください。"
     )
-
     st.stop()
 
 
@@ -53,554 +49,228 @@ MODEL = "gpt-5.4-mini"
 
 
 # =========================================================
-# 書類の説明
+# 書類情報
 # =========================================================
 
 DOCUMENT_INFO = {
 
     "1枚目": {
         "display_name": "① クレジット申込書",
-
         "description":
-        "「クレジットお申込の内容」があり、"
-        "申込者情報・勤務先・世帯状況・関係者情報・"
-        "クレジット支払内容・銀行口座などが載っている書類",
-
-        "landmarks":
-        """
-        ・「クレジットお申込の内容」という大きな見出しがある
-        ・お申込者情報、勤務先、世帯状況、関係者情報がある
-        ・下部にゆうちょ銀行／ゆうちょ銀行以外の銀行の欄がある
-        """
+            "「クレジットお申込の内容」があり、"
+            "申込者・勤務先・世帯状況・関係者情報・"
+            "銀行口座などがある書類"
     },
 
     "2枚目": {
         "display_name": "② 役務申込書・指導内容",
-
         "description":
-        "保護者氏名・指導対象A/B/C・コース名・"
-        "初回指導日・役務提供期間・商品数量などが載っている書類",
-
-        "landmarks":
-        """
-        ・右上付近に「指導対象」A・B・Cがある
-        ・左下付近に「コース名」「初回指導日」「役務提供期間」がある
-        ・中央付近に商品名・数量・金額の大きな表がある
-        ・受領サイン欄がある
-        """
+            "保護者氏名・指導対象・コース名・"
+            "初回指導日・役務提供期間・商品数量・"
+            "受領サインなどがある書類"
     }
 }
 
 
 # =========================================================
-# チェック項目
+# 通常AI判定するチェック項目
+# 厳格5項目はここには入れず、後でPython判定
 # =========================================================
 
 CHECK_ITEMS = {
-
-    # =====================================================
-    # 1枚目：クレジット申込書
-    # =====================================================
 
     "1枚目": [
 
         (
             "お申込年月日",
-            """
-            書類上部の「お申込年月日」を確認する。
-            年・月・日が必要な箇所まで記入されていること。
-            """
+            "上部の『お申込年月日』の年・月・日が記入されているか"
         ),
 
         (
             "申込者フリガナ",
-            """
-            申込者本人の氏名に対応する「フリガナ」欄だけを見る。
-            他のフリガナを代用してはいけない。
-            """
+            "申込者本人のフリガナ欄に記入があるか"
         ),
 
         (
             "申込者氏名",
-            """
-            申込者本人の姓・名が記入されているか確認する。
-            """
+            "申込者本人の姓・名が記入されているか"
         ),
 
         (
             "生年月日",
-            """
-            申込者本人の生年月日の年・月・日を確認する。
-            """
+            "申込者本人の生年月日が記入されているか"
         ),
 
         (
             "申込者住所",
             """
-            お申込者の「ご住所」欄を確認する。
-
-            都道府県まで記入されていること。
-
-            さらに印刷されている
-            「都・道・府・県」
-            の正しいものに○が付いていること。
-
-            例：
-            東京＋都 → OK
-            北海道＋道 → OK
-            大阪＋府 → OK
-            京都＋府 → OK
-            兵庫＋県 → OK
-
-            都道府県は書いてあるが○がない → missing
-
-            大阪なのに「県」へ○など、
-            都道府県と○が不一致 → warning
+            申込者の住所欄を確認する。
+            都道府県まで記入され、
+            都・道・府・県の適切なものに○があること。
             """
         ),
 
         (
             "勤務先名称",
-            """
-            勤務先名称欄に会社名等が記入されているか確認する。
-            """
+            "勤務先名称欄に記入があるか"
         ),
 
         (
             "勤務先電話番号",
-            """
-            勤務先の電話番号欄に電話番号が記入されているか確認する。
-            """
+            "勤務先電話番号欄に記入があるか"
         ),
 
         (
             "雇用形態",
-            """
-            雇用形態の選択肢のいずれかに○が付いているか確認する。
-            """
+            "雇用形態のいずれかが選択されているか"
         ),
 
         (
             "派遣先・出向先",
             """
-            雇用形態と連動して判定する。
-
-            「派遣社員」に○がある場合のみ
-            「派遣先・出向先の会社名」が必須。
-
-            派遣社員＋派遣先会社名あり → ok
-
-            派遣社員＋派遣先会社名なし → missing
-
-            派遣社員ではない →
-            派遣先・出向先が空欄でも問題ないため
-            not_applicable。
+            派遣社員に○がある場合だけ、
+            派遣先・出向先会社名が必要。
+            派遣社員以外なら not_applicable。
             """
         ),
 
         (
             "世帯主の確認",
             """
-            「世帯主の確認」欄について、
-            1. お申込者
-            2. 他
-            など必要な選択がされているか確認する。
-
-            重要：
-            「世帯主の確認」の右側にある
-            「連絡先」欄は空欄でもよい。
-
-            連絡先が空欄であることを理由に
-            missingにしてはいけない。
+            世帯主の確認欄の必要な選択があるか。
+            右側の「連絡先」は空欄でもよい。
             """
         ),
 
         (
             "世帯状況",
-            """
-            縦書きで「世帯状況」と書かれた部分を確認する。
-
-            必要な世帯主情報が記入されているか確認する。
-            """
+            "縦書き『世帯状況』欄の必要事項を確認する"
         ),
 
         (
             "世帯主クレジット月額",
             """
-            「世帯状況」欄にある
-
-            「世帯主のクレジットの月あたりのお支払額」
-
-            の金額を読む。
-
-            100,000円以下 → ok
-
-            100,000円を超える → warning
-
-            warningの場合、
-            reasonに
-            「月あたりのお支払額が10万円を超えているため要注意」
-            と書く。
-
-            observed_valueには読み取った金額を書く。
+            世帯主のクレジットの月あたり支払額を見る。
+            100,000円を超えていれば warning。
             """
         ),
 
         (
             "関係者情報",
             """
-            縦書きで「関係者情報」と書かれた欄を見る。
-
-            申込者が夫の場合 → 妻の情報
-
-            申込者が妻の場合 → 夫の情報
-
-            を記入する欄として確認する。
-
-            配偶者がいるのに必要な配偶者情報がない →
-            missing。
-
-            明らかに対象外の場合 →
-            not_applicable。
-
-            他の人物の情報を代用しない。
+            申込者が夫なら妻、
+            妻なら夫の情報が記入されているか確認する。
             """
         ),
 
         (
             "クレジット側役務提供期間",
             """
-            クレジット申込書側にある
-            「役務提供期間」
-            または
-            「役務提供期間（権利の移転時期）」
-            の指定欄を確認する。
-
-            必要な期間・年月等が記入されていること。
-
-            他の日付や期間を代用しない。
+            クレジット申込書側の役務提供期間欄に
+            必要な期間が記入されているか。
             """
         ),
 
         (
             "特定商取引法42条受領年月日",
             """
-            右上付近の
-
-            「特定商取引法第42条第2項、
-            又は第3項書面の受領年月日」
-
-            の欄だけを見る。
-
-            年・月・日がすべて記入 → ok
-
-            年・月・日の一部がない → missing
-
-            他の年月日を絶対に代用しない。
+            特定商取引法第42条第2項又は第3項書面の
+            受領年月日の年・月・日がすべて記入されているか。
             """
         ),
 
         (
             "支払ヶ月",
             """
-            指定されている「ヶ月」欄だけを見る。
-
-            月数が記入されていること。
-
-            書類内の別の数字、
-            支払回数、
-            年月日、
-            金額などを代用してはいけない。
+            指定されている「ヶ月」欄に
+            月数が記入されているか。
             """
         ),
 
         (
             "銀行口座",
             """
-            書類最下部の銀行口座欄を見る。
-
-            左側：
-            ゆうちょ銀行
-
-            右側：
-            ゆうちょ銀行以外の銀行
-
-            どちらか片方に必要事項が記入されていればOK。
-
-            ゆうちょのみ記入 → ok
-
-            その他銀行のみ記入 → ok
-
-            両方空欄 → missing
-
-            両方書く必要はない。
+            ゆうちょ銀行または
+            ゆうちょ銀行以外の銀行の
+            どちらか一方に必要事項が記入されているか。
             """
         ),
 
         (
             "口座名義人フリガナ",
             """
-            書類最下部付近の
-            「口座名義人」の「フリガナ」欄を見る。
-
-            使用している銀行口座に対応する
-            口座名義人フリガナが記入されていること。
-
-            他のフリガナを代用しない。
+            一番下の口座名義人フリガナ欄に
+            記入があるか。
             """
         ),
-
     ],
 
-
-    # =====================================================
-    # 2枚目：役務申込書・指導内容
-    # =====================================================
 
     "2枚目": [
 
         (
             "保護者氏名フリガナ",
             """
-            「保護者氏名」に対応する
-            フリガナ欄だけを確認する。
-
-            他の人のフリガナを使ってはいけない。
+            保護者氏名に対応するフリガナ欄だけを確認。
+            他のフリガナを代用しない。
             """
         ),
 
         (
             "保護者氏名",
-            """
-            「保護者氏名」欄に
-            氏名が記入されているか確認する。
-            """
-        ),
-
-        (
-            "ご住所・連絡先",
-            """
-            保護者等の「ご住所・連絡先」の
-            住所欄を確認する。
-
-            都道府県まで記入されていること。
-
-            さらに
-            「都・道・府・県」
-            の適切なものに○があること。
-
-            例：
-
-            東京＋都 → OK
-            北海道＋道 → OK
-            大阪＋府 → OK
-            京都＋府 → OK
-            兵庫＋県 → OK
-
-            都道府県名はあるが○なし → missing
-
-            ○だけあり住所なし → missing
-
-            都道府県と○が不一致 → warning
-            """
-        ),
-
-        (
-            "指導対象A",
-            """
-            右上の
-            「指導対象」
-            A・B・Cのうち、
-
-            Aを確認する。
-
-            Aの「有」に○が付いていること。
-
-            有に○ → ok
-
-            有に○なし → missing
-
-            写真から判別できない → uncertain
-
-            B・Cはこの項目では判定しない。
-            """
-        ),
-
-        (
-            "コース名",
-            """
-            左下付近にある
-            「コース名」の右側の記入欄を見る。
-
-            この欄には
-            「週1 90分」
-            のような内容が入る。
-
-            欄に記入あり → ok
-
-            空欄 → missing
-
-            別の場所にある
-            「週1」「90分」などを代用しない。
-            """
+            "保護者氏名欄に氏名があるか"
         ),
 
         (
             "初回指導日",
             """
-            左下付近の
-            「指導料・交通費について」
-            の中にある
-
-            「初回指導日」
-
-            を確認する。
-
-            必要な年月日が記入されていること。
-
-            他の日付を代用しない。
+            『初回指導日』欄そのものに
+            年月日が記入されているか。
             """
         ),
 
         (
             "役務提供期間A",
             """
-            左下付近の
-            「役務提供期間」
-            を確認する。
-
-            Aの行だけを判定対象とする。
-
-            Aが必要事項まで埋まっている → ok
-
-            Aが空欄または必要部分が欠けている → missing
-
-            Bは空欄でも問題ない。
-
-            Bが空欄であることを理由に
-            missingにしてはいけない。
+            役務提供期間のA行だけを確認する。
+            A行が埋まっていればOK。
+            B行は空欄でもよい。
             """
         ),
-
-        (
-            "受領サイン",
-            """
-            この2枚目の書類にある
-            受領サイン・受領確認の署名欄を見る。
-
-            手書きの署名または記名があれば → ok
-
-            空欄 → missing
-
-            黒ペンでも問題ない。
-
-            印刷された文字だけでは
-            記入済みにしてはいけない。
-            """
-        ),
-
-        (
-            "数量計",
-            """
-            この2枚目の中央付近にある
-            商品・役務・教材等の表を確認する。
-
-            必ず次の手順で判定する。
-
-            1.
-            商品表の「数量」欄に
-            実際に記入されている数量をすべて読む。
-
-            2.
-            それらを全部足す。
-
-            3.
-            表にある「数量計」の数字を読む。
-
-            4.
-            計算した数量合計と
-            「数量計」の記入値を比較する。
-
-
-            例：
-
-            数量欄
-            3
-            3
-
-            なら
-
-            3 + 3 = 6
-
-            数量計が6なら → ok
-
-            数量計が空欄 → missing
-
-            数量計が5など不一致 → warning
-
-
-            最重要：
-
-            「金額」
-            「税込金額」
-            「単価」
-            「小計」
-            「商品定価合計」
-            「申込合計額」
-            「頭金」
-            「支払額」
-
-            などの金額を
-            数量として絶対に使用しない。
-
-            observed_valueには可能なら
-
-            「3 + 3 = 6 / 数量計 6」
-
-            のように書く。
-            """
-        ),
-
-        (
-            "その他必須記入欄",
-            """
-            この2枚目について、
-
-            「※」などで明らかに必須と示されている欄や、
-            明らかに必要な主要記入欄で、
-
-            上記チェック項目に含まれていない
-            重大な記入漏れがないか確認する。
-
-            ただし、
-
-            条件付きの欄
-            任意欄
-            対象外の欄
-
-            を勝手にmissingにしてはいけない。
-
-            判断できない場合は
-            uncertain。
-            """
-        ),
-
     ]
 }
+
+
+# =========================================================
+# 都道府県一覧
+# =========================================================
+
+PREFECTURES = [
+    "北海道",
+    "青森県", "岩手県", "宮城県", "秋田県", "山形県", "福島県",
+    "茨城県", "栃木県", "群馬県", "埼玉県", "千葉県", "東京都",
+    "神奈川県", "新潟県", "富山県", "石川県", "福井県", "山梨県",
+    "長野県", "岐阜県", "静岡県", "愛知県", "三重県", "滋賀県",
+    "京都府", "大阪府", "兵庫県", "奈良県", "和歌山県", "鳥取県",
+    "島根県", "岡山県", "広島県", "山口県", "徳島県", "香川県",
+    "愛媛県", "高知県", "福岡県", "佐賀県", "長崎県", "熊本県",
+    "大分県", "宮崎県", "鹿児島県", "沖縄県"
+]
 
 
 # =========================================================
 # 画像処理
 # =========================================================
 
-def image_to_data_url(uploaded):
+def prepare_image(uploaded):
 
     img = Image.open(uploaded)
 
-    img = ImageOps.exif_transpose(img).convert("RGB")
+    img = ImageOps.exif_transpose(
+        img
+    ).convert("RGB")
 
-    # 細かい文字を読むため少し高め
-    max_side = 2800
+    max_side = 3000
 
     if max(img.size) > max_side:
 
@@ -613,39 +283,93 @@ def image_to_data_url(uploaded):
             )
         )
 
+    return img
+
+
+def pil_to_data_url(img):
+
     buf = BytesIO()
 
     img.save(
         buf,
         format="JPEG",
-        quality=92
+        quality=94
     )
 
     b64 = base64.b64encode(
         buf.getvalue()
     ).decode("utf-8")
 
-    return (
-        f"data:image/jpeg;base64,{b64}",
-        img
+    return f"data:image/jpeg;base64,{b64}"
+
+
+def crop_by_ratio(img, left, top, right, bottom):
+
+    w, h = img.size
+
+    return img.crop(
+        (
+            int(w * left),
+            int(h * top),
+            int(w * right),
+            int(h * bottom)
+        )
     )
 
 
 # =========================================================
-# JSON Schema
+# 2枚目の重要欄を切り出す
+#
+# 同じ帳票テンプレートを使う前提。
+# 写真に多少余白があっても周辺を広めに切る。
 # =========================================================
 
-def make_schema(active_pages):
+def create_page2_crops(img):
 
-    # 今回アップロードされたページの項目だけ候補にする
-    active_names = []
+    return {
 
-    for page_name in active_pages:
+        # 左上：保護者住所付近
+        "住所・都道府県": crop_by_ratio(
+            img,
+            0.02, 0.08,
+            0.52, 0.37
+        ),
 
-        for name, _ in CHECK_ITEMS[page_name]:
+        # 右上：A/B/C指導対象
+        "指導対象A": crop_by_ratio(
+            img,
+            0.48, 0.05,
+            0.98, 0.33
+        ),
 
-            if name not in active_names:
-                active_names.append(name)
+        # 左下：コース名、初回指導日、役務提供期間
+        "コース名・初回指導日・役務提供期間": crop_by_ratio(
+            img,
+            0.02, 0.34,
+            0.48, 0.83
+        ),
+
+        # 中央の商品数量表
+        "数量表": crop_by_ratio(
+            img,
+            0.40, 0.28,
+            0.79, 0.92
+        ),
+
+        # 上部：書面交付・受領関連
+        "受領サイン": crop_by_ratio(
+            img,
+            0.30, 0.00,
+            0.98, 0.20
+        ),
+    }
+
+
+# =========================================================
+# 厳格5項目用のSchema
+# =========================================================
+
+def strict_page2_schema():
 
     return {
 
@@ -653,7 +377,673 @@ def make_schema(active_pages):
 
         "json_schema": {
 
-            "name": "contract_check",
+            "name": "strict_page2_read",
+
+            "strict": True,
+
+            "schema": {
+
+                "type": "object",
+
+                "properties": {
+
+                    "course_name": {
+
+                        "type": "object",
+
+                        "properties": {
+
+                            "written_text": {
+                                "type": "string"
+                            },
+
+                            "has_handwriting_in_target_box": {
+                                "type": "boolean"
+                            }
+                        },
+
+                        "required": [
+                            "written_text",
+                            "has_handwriting_in_target_box"
+                        ],
+
+                        "additionalProperties": False
+                    },
+
+
+                    "address": {
+
+                        "type": "object",
+
+                        "properties": {
+
+                            "written_prefecture": {
+                                "type": "string"
+                            },
+
+                            "circle_mark": {
+                                "type": "string",
+                                "enum": [
+                                    "都",
+                                    "道",
+                                    "府",
+                                    "県",
+                                    "none",
+                                    "uncertain"
+                                ]
+                            }
+                        },
+
+                        "required": [
+                            "written_prefecture",
+                            "circle_mark"
+                        ],
+
+                        "additionalProperties": False
+                    },
+
+
+                    "target_a": {
+
+                        "type": "object",
+
+                        "properties": {
+
+                            "yes_is_circled": {
+                                "type": "boolean"
+                            },
+
+                            "visible_mark_description": {
+                                "type": "string"
+                            }
+                        },
+
+                        "required": [
+                            "yes_is_circled",
+                            "visible_mark_description"
+                        ],
+
+                        "additionalProperties": False
+                    },
+
+
+                    "quantity": {
+
+                        "type": "object",
+
+                        "properties": {
+
+                            "quantity_values": {
+
+                                "type": "array",
+
+                                "items": {
+                                    "type": "integer"
+                                }
+                            },
+
+                            "written_quantity_total": {
+                                "type": "string"
+                            },
+
+                            "quantity_total_box_has_handwriting": {
+                                "type": "boolean"
+                            }
+                        },
+
+                        "required": [
+                            "quantity_values",
+                            "written_quantity_total",
+                            "quantity_total_box_has_handwriting"
+                        ],
+
+                        "additionalProperties": False
+                    },
+
+
+                    "receipt_signature": {
+
+                        "type": "object",
+
+                        "properties": {
+
+                            "written_text": {
+                                "type": "string"
+                            },
+
+                            "signature_box_has_handwriting": {
+                                "type": "boolean"
+                            }
+                        },
+
+                        "required": [
+                            "written_text",
+                            "signature_box_has_handwriting"
+                        ],
+
+                        "additionalProperties": False
+                    }
+
+                },
+
+                "required": [
+                    "course_name",
+                    "address",
+                    "target_a",
+                    "quantity",
+                    "receipt_signature"
+                ],
+
+                "additionalProperties": False
+            }
+        }
+    }
+
+
+# =========================================================
+# 2枚目の厳格読み取り
+# =========================================================
+
+def strict_read_page2(img):
+
+    crops = create_page2_crops(img)
+
+    content = [
+
+        {
+            "type": "text",
+            "text": """
+あなたは契約書の指定欄を読むだけの担当です。
+
+重要：
+今回はOK/NGを判断しません。
+
+指定した欄に
+「実際に見える手書き文字・数字・○」
+だけを忠実に返してください。
+
+絶対に推測しないでください。
+
+たとえば住所に
+「神戸市」
+としか書かれていないなら、
+兵庫県だと推測してはいけません。
+
+written_prefecture は空文字にしてください。
+
+また、
+数量欄の数字を足して数量計を推測してはいけません。
+
+数量計欄そのものが空欄なら、
+written_quantity_total は空文字、
+quantity_total_box_has_handwriting は false。
+
+受領サインも、
+別の氏名・販売担当者名・保護者氏名を
+代用してはいけません。
+
+コース名も、
+別の欄にある「4回/月」等を
+コース名として代用してはいけません。
+
+指導対象Aも、
+Aの「有」の文字そのものに
+明確な○が付いている場合だけ
+yes_is_circled=true にしてください。
+"""
+        }
+
+    ]
+
+    for name, crop in crops.items():
+
+        content.append(
+            {
+                "type": "text",
+                "text": f"以下は【{name}】周辺の拡大画像です。"
+            }
+        )
+
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": pil_to_data_url(crop),
+                    "detail": "high"
+                }
+            }
+        )
+
+
+    response = client.chat.completions.create(
+
+        model=MODEL,
+
+        messages=[
+            {
+                "role": "user",
+                "content": content
+            }
+        ],
+
+        response_format=strict_page2_schema()
+    )
+
+    return json.loads(
+        response.choices[0].message.content
+    )
+
+
+# =========================================================
+# Python側で厳格5項目を判定
+# =========================================================
+
+def expected_prefecture_mark(prefecture):
+
+    if prefecture == "東京都":
+        return "都"
+
+    if prefecture == "北海道":
+        return "道"
+
+    if prefecture in [
+        "京都府",
+        "大阪府"
+    ]:
+        return "府"
+
+    if prefecture.endswith("県"):
+        return "県"
+
+    return None
+
+
+def strict_results_page2(data):
+
+    results = []
+
+
+    # -----------------------------------------------------
+    # コース名
+    # 必須：「週1」と「90分」
+    # -----------------------------------------------------
+
+    course = data["course_name"]
+
+    course_text = course[
+        "written_text"
+    ].replace(" ", "")
+
+    course_has_text = course[
+        "has_handwriting_in_target_box"
+    ]
+
+
+    has_week1 = (
+        "週1" in course_text
+        or "週１" in course_text
+    )
+
+    has_90 = (
+        "90分" in course_text
+        or "９０分" in course_text
+    )
+
+
+    if (
+        course_has_text
+        and has_week1
+        and has_90
+    ):
+
+        course_status = "ok"
+
+        course_reason = (
+            "コース名欄に「週1」と「90分」の記載を確認。"
+        )
+
+    else:
+
+        course_status = "missing"
+
+        course_reason = (
+            "指定されたコース名欄に"
+            "「週1 90分」の必要な記載を確認できません。"
+        )
+
+
+    results.append(
+        {
+            "name": "コース名",
+            "status": course_status,
+            "observed_value":
+                course["written_text"],
+            "reason": course_reason
+        }
+    )
+
+
+    # -----------------------------------------------------
+    # ご住所・連絡先
+    # 都道府県の実記載＋丸
+    # -----------------------------------------------------
+
+    address = data["address"]
+
+    written_prefecture = address[
+        "written_prefecture"
+    ].strip()
+
+    mark = address[
+        "circle_mark"
+    ]
+
+
+    valid_prefecture = (
+        written_prefecture
+        in PREFECTURES
+    )
+
+    required_mark = None
+
+    if valid_prefecture:
+
+        required_mark = expected_prefecture_mark(
+            written_prefecture
+        )
+
+
+    if (
+        valid_prefecture
+        and mark == required_mark
+    ):
+
+        address_status = "ok"
+
+        address_reason = (
+            f"{written_prefecture}の記載と"
+            f"「{mark}」への○を確認。"
+        )
+
+    else:
+
+        address_status = "missing"
+
+        if not valid_prefecture:
+
+            address_reason = (
+                "住所欄に都道府県名までの"
+                "明確な記載を確認できません。"
+            )
+
+        elif mark in [
+            "none",
+            "uncertain"
+        ]:
+
+            address_reason = (
+                f"{written_prefecture}の記載はありますが、"
+                "都・道・府・県の対応箇所への"
+                "明確な○を確認できません。"
+            )
+
+        else:
+
+            address_reason = (
+                f"{written_prefecture}に対して"
+                f"○が「{mark}」となっており一致しません。"
+            )
+
+
+    observed_address = (
+        f"都道府県："
+        f"{written_prefecture if written_prefecture else '確認できず'}"
+        f" / ○：{mark}"
+    )
+
+
+    results.append(
+        {
+            "name": "ご住所・連絡先",
+            "status": address_status,
+            "observed_value":
+                observed_address,
+            "reason": address_reason
+        }
+    )
+
+
+    # -----------------------------------------------------
+    # 指導対象A
+    # -----------------------------------------------------
+
+    target = data["target_a"]
+
+
+    if target["yes_is_circled"]:
+
+        target_status = "ok"
+
+        target_reason = (
+            "指導対象Aの「有」に"
+            "明確な○を確認。"
+        )
+
+    else:
+
+        target_status = "missing"
+
+        target_reason = (
+            "指導対象Aの「有」に"
+            "明確な○を確認できません。"
+        )
+
+
+    results.append(
+        {
+            "name": "指導対象A",
+            "status": target_status,
+            "observed_value":
+                target["visible_mark_description"],
+            "reason": target_reason
+        }
+    )
+
+
+    # -----------------------------------------------------
+    # 数量計
+    # -----------------------------------------------------
+
+    quantity = data["quantity"]
+
+    values = quantity[
+        "quantity_values"
+    ]
+
+    total_text = quantity[
+        "written_quantity_total"
+    ].strip()
+
+    total_has_handwriting = quantity[
+        "quantity_total_box_has_handwriting"
+    ]
+
+
+    calculated_total = (
+        sum(values)
+        if values
+        else None
+    )
+
+
+    written_total_number = None
+
+    if total_text:
+
+        match = re.search(
+            r"\d+",
+            total_text
+        )
+
+        if match:
+
+            written_total_number = int(
+                match.group()
+            )
+
+
+    if not total_has_handwriting:
+
+        quantity_status = "missing"
+
+        quantity_reason = (
+            "数量計欄そのものに"
+            "数値の記載を確認できません。"
+        )
+
+    elif written_total_number is None:
+
+        quantity_status = "uncertain"
+
+        quantity_reason = (
+            "数量計欄に記入はありますが、"
+            "数値を確実に読み取れません。"
+        )
+
+    elif calculated_total is None:
+
+        quantity_status = "uncertain"
+
+        quantity_reason = (
+            "各商品の数量を確実に読み取れないため、"
+            "数量計との照合ができません。"
+        )
+
+    elif (
+        written_total_number
+        != calculated_total
+    ):
+
+        quantity_status = "warning"
+
+        quantity_reason = (
+            f"数量欄の合計は{calculated_total}ですが、"
+            f"数量計欄は{written_total_number}です。"
+        )
+
+    else:
+
+        quantity_status = "ok"
+
+        quantity_reason = (
+            "数量欄の合計と"
+            "数量計欄が一致しています。"
+        )
+
+
+    if values:
+
+        calculation_text = (
+            " + ".join(
+                str(v)
+                for v in values
+            )
+            + f" = {calculated_total}"
+        )
+
+    else:
+
+        calculation_text = (
+            "数量を確実に読み取れず"
+        )
+
+
+    total_display = (
+        total_text
+        if total_text
+        else "空欄"
+    )
+
+
+    results.append(
+        {
+            "name": "数量計",
+            "status": quantity_status,
+            "observed_value":
+                f"{calculation_text} / 数量計欄：{total_display}",
+            "reason": quantity_reason
+        }
+    )
+
+
+    # -----------------------------------------------------
+    # 受領サイン
+    # -----------------------------------------------------
+
+    sign = data[
+        "receipt_signature"
+    ]
+
+
+    if sign[
+        "signature_box_has_handwriting"
+    ]:
+
+        sign_status = "ok"
+
+        sign_reason = (
+            "受領サイン指定欄の中に"
+            "手書き記入を確認。"
+        )
+
+    else:
+
+        sign_status = "missing"
+
+        sign_reason = (
+            "受領サイン指定欄に"
+            "手書き署名・記名を確認できません。"
+        )
+
+
+    results.append(
+        {
+            "name": "受領サイン",
+            "status": sign_status,
+            "observed_value":
+                sign["written_text"],
+            "reason": sign_reason
+        }
+    )
+
+
+    return results
+
+
+# =========================================================
+# 通常項目用Schema
+# =========================================================
+
+def normal_schema(active_pages):
+
+    item_names = []
+
+    for page in active_pages:
+
+        for name, _ in CHECK_ITEMS[
+            page
+        ]:
+
+            item_names.append(name)
+
+
+    return {
+
+        "type": "json_schema",
+
+        "json_schema": {
+
+            "name": "normal_contract_check",
 
             "strict": True,
 
@@ -687,10 +1077,6 @@ def make_schema(active_pages):
                                     ]
                                 },
 
-                                "document_type_reason": {
-                                    "type": "string"
-                                },
-
                                 "document_quality": {
                                     "type": "string",
                                     "enum": [
@@ -712,7 +1098,7 @@ def make_schema(active_pages):
 
                                             "name": {
                                                 "type": "string",
-                                                "enum": active_names
+                                                "enum": item_names
                                             },
 
                                             "status": {
@@ -733,7 +1119,6 @@ def make_schema(active_pages):
                                             "reason": {
                                                 "type": "string"
                                             }
-
                                         },
 
                                         "required": [
@@ -751,7 +1136,6 @@ def make_schema(active_pages):
                             "required": [
                                 "page_name",
                                 "document_type_status",
-                                "document_type_reason",
                                 "document_quality",
                                 "items"
                             ],
@@ -772,64 +1156,41 @@ def make_schema(active_pages):
 
 
 # =========================================================
-# AIチェック
+# 通常AIチェック
 # =========================================================
 
-def check_with_ai(files):
+def normal_ai_check(files, prepared_images):
 
     active_pages = [
-        page_name
-        for page_name, uploaded in files.items()
+        page
+        for page, uploaded
+        in files.items()
         if uploaded is not None
     ]
 
+
+    sections = []
+
     content = []
 
-    previews = {}
 
-    checklist_sections = []
+    for page in active_pages:
 
-
-    for page_name in active_pages:
-
-        uploaded = files[page_name]
-
-        data_url, preview = image_to_data_url(uploaded)
-
-        previews[page_name] = preview
-
-
-        item_text = "\n".join(
+        checklist = "\n".join(
             [
-                f"""
-■ {name}
-
-{description}
-"""
-                for name, description in CHECK_ITEMS[page_name]
+                f"■ {name}\n{description}"
+                for name, description
+                in CHECK_ITEMS[page]
             ]
         )
 
-
-        checklist_sections.append(
+        sections.append(
             f"""
-==================================================
-【{page_name}】
-{DOCUMENT_INFO[page_name]["display_name"]}
-==================================================
+【{page}】
 
-想定する書類：
+{DOCUMENT_INFO[page]["description"]}
 
-{DOCUMENT_INFO[page_name]["description"]}
-
-書類を見分ける特徴：
-
-{DOCUMENT_INFO[page_name]["landmarks"]}
-
-
-チェック項目：
-
-{item_text}
+{checklist}
 """
         )
 
@@ -838,7 +1199,7 @@ def check_with_ai(files):
             {
                 "type": "text",
                 "text":
-                f"次の画像はユーザーが【{page_name}】としてアップロードした画像です。"
+                    f"次の画像は【{page}】です。"
             }
         )
 
@@ -846,184 +1207,36 @@ def check_with_ai(files):
             {
                 "type": "image_url",
                 "image_url": {
-                    "url": data_url,
+                    "url":
+                        pil_to_data_url(
+                            prepared_images[page]
+                        ),
                     "detail": "high"
                 }
             }
         )
 
 
-    checklist_text = "\n".join(checklist_sections)
-
-
     prompt = f"""
-あなたは日本語契約書の提出前チェック担当です。
-
-ユーザーがアップロードした画像を確認してください。
-
-
-{checklist_text}
-
-
-==================================================
-絶対ルール
-==================================================
-
-【1】
-
-ページごとのチェック項目を絶対に混ぜないでください。
-
-「1枚目」の項目は
-1枚目だけで判定してください。
-
-「2枚目」の項目は
-2枚目だけで判定してください。
-
-
-例えば、
-
-受領サイン
-
-数量計
-
-は2枚目の項目です。
-
-1枚目の項目として返してはいけません。
-
-
-【2】
-
-今回アップロードされていないページについては、
-結果を一切返さないでください。
-
-例えば、
-
-2枚目だけアップロードされた場合は
-
-2枚目の結果だけを返してください。
-
-1枚目の項目を
-not_applicableとして並べることも禁止です。
-
-
-【3】
-
-まず画像が想定している書類か確認してください。
-
-想定した書類なら
-
-document_type_status = match
-
-違う書類なら
-
-wrong_document
-
-確信できない場合は
-
-uncertain
-
-にしてください。
-
-
-【4】
-
-印刷されている文字だけでは
-記入済みにしないでください。
-
-手書き、
-○、
-署名、
-押印、
-入力数字
-
-などを確認してください。
-
-
-【5】
-
-各項目は指定された場所だけを見ます。
-
-別の場所にある
-
-名前
-数字
-カタカナ
-年月日
-金額
-
-を勝手に代用してはいけません。
-
-
-【6】
-
-問題なし →
-
-ok
-
-
-本来必要なのに未記入 →
-
-missing
-
-
-記入はあるが、
-条件違反や不一致 →
-
-warning
-
-
-画像から判断できない →
-
-uncertain
-
-
-条件上そもそも不要 →
-
-not_applicable
-
-
-【7】
-
-自信がない場合は
-推測でokにしないでください。
-
-uncertainにしてください。
-
-
-【8】
-
-数量計は特に厳密に判定してください。
-
-数量欄の数値だけを読みます。
-
-金額や単価を
-数量として使ってはいけません。
-
-数量を実際に足して、
-数量計と比較してください。
-
-
-【9】
-
-observed_valueには、
-判定に必要な内容だけを短く書いてください。
-
-個人情報を必要以上に
-全文転記しないでください。
-
-
-【10】
-
-reasonは日本語で簡潔に書いてください。
-
-
-【11】
-
-アップロードされた各ページについて、
-そのページ用に定義されたチェック項目を
-すべて1回ずつ返してください。
-
-項目を勝手に省略しないでください。
+あなたは日本語契約書の記入漏れ確認担当です。
+
+以下のチェック項目を確認してください。
+
+{"".join(sections)}
+
+ルール：
+
+・別ページの項目を混ぜない。
+・今回アップロードされていないページは返さない。
+・印刷文字だけでは記入済みにしない。
+・指定された欄だけを見る。
+・別欄の数字や氏名を代用しない。
+・推測しない。
+・判断できなければ uncertain。
+・条件上不要なら not_applicable。
+・問題なければ ok。
+・未記入なら missing。
+・内容上注意が必要なら warning。
 """
 
 
@@ -1047,271 +1260,76 @@ reasonは日本語で簡潔に書いてください。
             }
         ],
 
-        response_format=make_schema(active_pages)
+        response_format=
+            normal_schema(active_pages)
     )
 
 
-    raw = response.choices[0].message.content
-
-    result = json.loads(raw)
-
-    return result, previews, active_pages
-
-
-# =========================================================
-# AIが項目を混ぜても画面には出さない安全処理
-# =========================================================
-
-def normalize_result(result, active_pages):
-
-    returned_pages = {}
-
-    for page in result.get("pages", []):
-
-        page_name = page.get("page_name")
-
-        if page_name in active_pages:
-            returned_pages[page_name] = page
-
-
-    normalized_pages = []
-
-
-    for page_name in active_pages:
-
-        expected_items = {
-            name: description
-            for name, description in CHECK_ITEMS[page_name]
-        }
-
-
-        if page_name not in returned_pages:
-
-            normalized_pages.append(
-                {
-                    "page_name": page_name,
-                    "document_type_status": "uncertain",
-                    "document_type_reason":
-                        "AIからこのページの判定結果が返されませんでした。",
-                    "document_quality": "poor",
-                    "items": [
-                        {
-                            "name": name,
-                            "status": "uncertain",
-                            "observed_value": "",
-                            "reason":
-                                "AIからこの項目の判定結果が返されませんでした。"
-                        }
-                        for name in expected_items.keys()
-                    ]
-                }
-            )
-
-            continue
-
-
-        page = returned_pages[page_name]
-
-
-        returned_items = {}
-
-        for item in page.get("items", []):
-
-            name = item.get("name")
-
-            # そのページに本来存在する項目だけ採用
-            if name in expected_items:
-
-                # 同じ項目が複数あっても最初だけ
-                if name not in returned_items:
-                    returned_items[name] = item
-
-
-        clean_items = []
-
-
-        # CHECK_ITEMSで定義した順番で表示
-        for expected_name in expected_items.keys():
-
-            if expected_name in returned_items:
-
-                clean_items.append(
-                    returned_items[expected_name]
-                )
-
-            else:
-
-                clean_items.append(
-                    {
-                        "name": expected_name,
-                        "status": "uncertain",
-                        "observed_value": "",
-                        "reason":
-                            "AIからこの項目の判定結果が返されませんでした。"
-                    }
-                )
-
-
-        page["items"] = clean_items
-
-        normalized_pages.append(page)
-
-
-    result["pages"] = normalized_pages
-
-    return result
+    return json.loads(
+        response.choices[0].message.content
+    )
 
 
 # =========================================================
 # 結果表示
 # =========================================================
 
-def display_page_result(page, preview):
+def display_item(item):
 
-    page_name = page["page_name"]
-
-    display_name = DOCUMENT_INFO[page_name]["display_name"]
-
-    st.subheader(display_name)
+    status = item["status"]
 
 
-    if preview is not None:
+    if status == "ok":
 
-        st.image(
-            preview,
-            use_container_width=True
-        )
+        icon = "✅"
+        label = "問題なし"
 
+    elif status == "missing":
 
-    # -----------------------------------------------------
-    # 書類種類
-    # -----------------------------------------------------
+        icon = "❌"
+        label = "記入漏れ"
 
-    doc_status = page["document_type_status"]
+    elif status == "warning":
 
+        icon = "⚠️"
+        label = "要注意"
 
-    if doc_status == "match":
+    elif status == "not_applicable":
 
-        st.success(
-            "✅ 書類の種類：正しい書類と判定"
-        )
-
-    elif doc_status == "wrong_document":
-
-        st.error(
-            "❌ アップロードした書類が違う可能性があります。"
-        )
-
-        st.write(
-            page["document_type_reason"]
-        )
+        icon = "➖"
+        label = "対象外"
 
     else:
 
-        st.warning(
-            "⚠️ 書類の種類を確実に判定できませんでした。"
+        icon = "🔍"
+        label = "要確認"
+
+
+    with st.container(
+        border=True
+    ):
+
+        st.markdown(
+            f"### {icon} "
+            f"{item['name']}：{label}"
         )
 
-        st.write(
-            page["document_type_reason"]
-        )
+        if item[
+            "observed_value"
+        ]:
 
-
-    # -----------------------------------------------------
-    # 画像品質
-    # -----------------------------------------------------
-
-    quality_labels = {
-
-        "good":
-        "✅ 画像品質：良好",
-
-        "usable":
-        "🟡 画像品質：判定可能",
-
-        "poor":
-        "🔴 画像品質：不十分"
-    }
-
-
-    st.caption(
-        quality_labels.get(
-            page["document_quality"],
-            ""
-        )
-    )
-
-
-    missing = 0
-    warning = 0
-    uncertain = 0
-
-
-    for item in page["items"]:
-
-        status = item["status"]
-
-
-        if status == "ok":
-
-            icon = "✅"
-            label = "問題なし"
-
-
-        elif status == "missing":
-
-            icon = "❌"
-            label = "記入漏れ"
-
-            missing += 1
-
-
-        elif status == "warning":
-
-            icon = "⚠️"
-            label = "要注意"
-
-            warning += 1
-
-
-        elif status == "not_applicable":
-
-            icon = "➖"
-            label = "対象外"
-
-
-        else:
-
-            icon = "🔍"
-            label = "要確認"
-
-            uncertain += 1
-
-
-        with st.container(border=True):
-
-            st.markdown(
-                f"### {icon} {item['name']}：{label}"
+            st.write(
+                "読み取った内容："
+                f"**{item['observed_value']}**"
             )
 
-
-            if item["observed_value"]:
-
-                st.write(
-                    f"読み取った内容：**{item['observed_value']}**"
-                )
-
-
-            st.caption(
-                item["reason"]
-            )
-
-
-    return missing, warning, uncertain
+        st.caption(
+            item["reason"]
+        )
 
 
 # =========================================================
-# アップロード画面
+# アップロード
 # =========================================================
 
 st.divider()
@@ -1320,23 +1338,14 @@ st.markdown(
     "## 📷 契約書の写真を選択"
 )
 
-st.write(
-    "それぞれ対応する書類を選択してください。"
-)
-
-
-# =========================================================
-# 1枚目
-# =========================================================
 
 st.markdown(
     "### ① クレジット申込書"
 )
 
 st.info(
-    "「クレジットお申込の内容」があり、"
-    "お申込者情報・勤務先・世帯状況・関係者情報・"
-    "銀行口座などが載っている書類です。"
+    "「クレジットお申込の内容」、"
+    "世帯状況、関係者情報、銀行口座などがある書類"
 )
 
 file1 = st.file_uploader(
@@ -1350,18 +1359,14 @@ file1 = st.file_uploader(
 )
 
 
-# =========================================================
-# 2枚目
-# =========================================================
-
 st.markdown(
     "### ② 役務申込書・指導内容"
 )
 
 st.info(
-    "保護者氏名・指導対象A/B/C・コース名・"
-    "初回指導日・役務提供期間・商品数量・"
-    "受領サインなどが載っている書類です。"
+    "保護者氏名、指導対象A/B/C、"
+    "コース名、初回指導日、役務提供期間、"
+    "商品数量、受領サインなどがある書類"
 )
 
 file2 = st.file_uploader(
@@ -1376,13 +1381,13 @@ file2 = st.file_uploader(
 
 
 st.caption(
-    "📌 契約書全体が入るように、"
-    "できるだけ真上から明るい場所で撮影してください。"
+    "契約書全体が入るように、"
+    "できるだけ真上から撮影してください。"
 )
 
 
 # =========================================================
-# AIチェック
+# チェック開始
 # =========================================================
 
 if st.button(
@@ -1407,20 +1412,46 @@ if st.button(
             }
 
 
+            prepared_images = {}
+
+
+            if file1:
+
+                prepared_images[
+                    "1枚目"
+                ] = prepare_image(file1)
+
+
+            if file2:
+
+                prepared_images[
+                    "2枚目"
+                ] = prepare_image(file2)
+
+
             with st.spinner(
-                "AIが契約書を確認しています…"
+                "契約書を確認しています…"
             ):
 
-                result, previews, active_pages = check_with_ai(
-                    files
+                # 通常項目
+                normal_result = normal_ai_check(
+                    files,
+                    prepared_images
                 )
 
 
-                # ページ混在を防ぐ安全処理
-                result = normalize_result(
-                    result,
-                    active_pages
-                )
+                # 2枚目の厳格5項目
+                strict_items = []
+
+                if file2:
+
+                    strict_data = strict_read_page2(
+                        prepared_images["2枚目"]
+                    )
+
+                    strict_items = strict_results_page2(
+                        strict_data
+                    )
 
 
             total_missing = 0
@@ -1428,25 +1459,159 @@ if st.button(
             total_uncertain = 0
 
 
-            for page in result["pages"]:
+            # =================================================
+            # ページ別表示
+            # =================================================
 
-                page_name = page["page_name"]
+            for page in normal_result[
+                "pages"
+            ]:
 
-                preview = previews.get(
-                    page_name
+                page_name = page[
+                    "page_name"
+                ]
+
+
+                st.subheader(
+                    DOCUMENT_INFO[
+                        page_name
+                    ]["display_name"]
                 )
 
 
-                m, w, u = display_page_result(
-                    page,
-                    preview
+                st.image(
+                    prepared_images[
+                        page_name
+                    ],
+                    use_container_width=True
                 )
 
 
-                total_missing += m
-                total_warning += w
-                total_uncertain += u
+                if page[
+                    "document_type_status"
+                ] == "match":
 
+                    st.success(
+                        "✅ 書類の種類：正しい書類と判定"
+                    )
+
+                elif page[
+                    "document_type_status"
+                ] == "wrong_document":
+
+                    st.error(
+                        "❌ 書類の種類が違う可能性があります。"
+                    )
+
+                else:
+
+                    st.warning(
+                        "⚠️ 書類種類を確実に判定できません。"
+                    )
+
+
+                quality = page[
+                    "document_quality"
+                ]
+
+
+                if quality == "good":
+
+                    st.caption(
+                        "✅ 画像品質：良好"
+                    )
+
+                elif quality == "usable":
+
+                    st.caption(
+                        "🟡 画像品質：判定可能"
+                    )
+
+                else:
+
+                    st.caption(
+                        "🔴 画像品質：不十分"
+                    )
+
+
+                page_items = list(
+                    page["items"]
+                )
+
+
+                # 2枚目だけ厳格5項目を追加
+                if page_name == "2枚目":
+
+                    # 表示順
+                    wanted_order = [
+                        "保護者氏名フリガナ",
+                        "保護者氏名",
+                        "ご住所・連絡先",
+                        "指導対象A",
+                        "コース名",
+                        "初回指導日",
+                        "役務提供期間A",
+                        "受領サイン",
+                        "数量計"
+                    ]
+
+
+                    combined = {}
+
+
+                    for item in page_items:
+
+                        combined[
+                            item["name"]
+                        ] = item
+
+
+                    for item in strict_items:
+
+                        combined[
+                            item["name"]
+                        ] = item
+
+
+                    page_items = []
+
+
+                    for name in wanted_order:
+
+                        if name in combined:
+
+                            page_items.append(
+                                combined[name]
+                            )
+
+
+                for item in page_items:
+
+                    display_item(item)
+
+
+                    if item[
+                        "status"
+                    ] == "missing":
+
+                        total_missing += 1
+
+                    elif item[
+                        "status"
+                    ] == "warning":
+
+                        total_warning += 1
+
+                    elif item[
+                        "status"
+                    ] == "uncertain":
+
+                        total_uncertain += 1
+
+
+            # =================================================
+            # 最終結果
+            # =================================================
 
             st.divider()
 
@@ -1466,36 +1631,28 @@ if st.button(
                     "問題は見つかりませんでした。"
                 )
 
-
             else:
 
-                if total_missing > 0:
+                if total_missing:
 
                     st.error(
-                        f"❌ 記入漏れの可能性："
+                        f"❌ 記入漏れ："
                         f"{total_missing}件"
                     )
 
-
-                if total_warning > 0:
+                if total_warning:
 
                     st.warning(
-                        f"⚠️ 要注意項目："
+                        f"⚠️ 要注意："
                         f"{total_warning}件"
                     )
 
-
-                if total_uncertain > 0:
+                if total_uncertain:
 
                     st.warning(
-                        f"🔍 AIでは判定できない項目："
+                        f"🔍 要確認："
                         f"{total_uncertain}件"
                     )
-
-
-                st.info(
-                    "上記項目を人の目でも確認してください。"
-                )
 
 
         except Exception as e:

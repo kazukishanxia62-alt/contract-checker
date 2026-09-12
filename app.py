@@ -6,11 +6,6 @@ import json
 import re
 from openai import OpenAI
 
-
-# =========================================================
-# 基本設定
-# =========================================================
-
 st.set_page_config(
     page_title="契約書AIチェック",
     page_icon="✅",
@@ -29,11 +24,6 @@ st.warning(
     "最終確認は必ず人が行ってください。"
 )
 
-
-# =========================================================
-# OpenAI
-# =========================================================
-
 try:
     client = OpenAI(
         api_key=st.secrets["OPENAI_API_KEY"]
@@ -42,13 +32,7 @@ except Exception:
     st.error("OPENAI_API_KEY が設定されていません。")
     st.stop()
 
-
 MODEL = "gpt-5.4-mini"
-
-
-# =========================================================
-# 都道府県
-# =========================================================
 
 PREFECTURES = [
     "北海道",
@@ -64,36 +48,10 @@ PREFECTURES = [
 
 
 # =========================================================
-# 書類情報
-# =========================================================
-
-DOCUMENT_INFO = {
-
-    "1枚目": {
-        "display_name": "① クレジット申込書",
-        "description": (
-            "申込者情報、勤務先、世帯状況、関係者情報、"
-            "銀行口座などが載っている書類"
-        )
-    },
-
-    "2枚目": {
-        "display_name": "② 役務申込書・指導内容",
-        "description": (
-            "保護者氏名、指導対象、公・国・私、コース名、"
-            "初回指導日、役務提供期間、数量、受領サイン"
-            "などが載っている書類"
-        )
-    }
-}
-
-
-# =========================================================
 # 画像処理
 # =========================================================
 
 def prepare_image(uploaded):
-
     img = Image.open(uploaded)
 
     img = ImageOps.exif_transpose(
@@ -103,7 +61,6 @@ def prepare_image(uploaded):
     max_side = 3000
 
     if max(img.size) > max_side:
-
         ratio = max_side / max(img.size)
 
         img = img.resize(
@@ -116,23 +73,6 @@ def prepare_image(uploaded):
     return img
 
 
-def pil_to_data_url(img):
-
-    buf = BytesIO()
-
-    img.save(
-        buf,
-        format="JPEG",
-        quality=95
-    )
-
-    encoded = base64.b64encode(
-        buf.getvalue()
-    ).decode("utf-8")
-
-    return f"data:image/jpeg;base64,{encoded}"
-
-
 def crop_by_ratio(
     img,
     left,
@@ -140,7 +80,6 @@ def crop_by_ratio(
     right,
     bottom
 ):
-
     w, h = img.size
 
     return img.crop(
@@ -153,109 +92,233 @@ def crop_by_ratio(
     )
 
 
+def enlarge_image(
+    img,
+    min_long_side=2200
+):
+    long_side = max(img.size)
+
+    if long_side >= min_long_side:
+        return img
+
+    scale = min_long_side / long_side
+
+    return img.resize(
+        (
+            int(img.width * scale),
+            int(img.height * scale)
+        ),
+        Image.Resampling.LANCZOS
+    )
+
+
+def pil_to_data_url(img):
+    buf = BytesIO()
+
+    img.save(
+        buf,
+        format="JPEG",
+        quality=95
+    )
+
+    encoded = base64.b64encode(
+        buf.getvalue()
+    ).decode("utf-8")
+
+    return (
+        "data:image/jpeg;base64,"
+        + encoded
+    )
+
+
 # =========================================================
-# 1枚目 クロップ
+# 1枚目
+# 自動分割＋拡大
 # =========================================================
 
 def create_page1_crops(img):
 
     return {
 
-        "申込者情報": crop_by_ratio(
-            img,
-            0.00,
-            0.05,
-            0.58,
-            0.38
-        ),
+        "上半分":
+            enlarge_image(
+                crop_by_ratio(
+                    img,
+                    0.00,
+                    0.00,
+                    1.00,
+                    0.55
+                )
+            ),
 
-        "勤務先": crop_by_ratio(
-            img,
-            0.00,
-            0.28,
-            1.00,
-            0.60
-        ),
+        "下半分":
+            enlarge_image(
+                crop_by_ratio(
+                    img,
+                    0.00,
+                    0.45,
+                    1.00,
+                    1.00
+                )
+            ),
 
-        "世帯主・世帯状況": crop_by_ratio(
-            img,
-            0.00,
-            0.45,
-            1.00,
-            0.72
-        ),
+        "契約者氏名・住所・住所フリガナ":
+            enlarge_image(
+                crop_by_ratio(
+                    img,
+                    0.00,
+                    0.05,
+                    0.58,
+                    0.34
+                ),
+                2400
+            ),
 
-        "関係者情報": crop_by_ratio(
-            img,
-            0.00,
-            0.56,
-            1.00,
-            0.88
-        ),
+        "勤務先・雇用形態・派遣先":
+            enlarge_image(
+                crop_by_ratio(
+                    img,
+                    0.00,
+                    0.24,
+                    0.70,
+                    0.50
+                ),
+                2400
+            ),
 
-        "銀行口座": crop_by_ratio(
-            img,
-            0.00,
-            0.78,
-            1.00,
-            1.00
-        )
+        "世帯主・世帯状況":
+            enlarge_image(
+                crop_by_ratio(
+                    img,
+                    0.00,
+                    0.43,
+                    0.72,
+                    0.64
+                ),
+                2400
+            ),
+
+        "関係者情報":
+            enlarge_image(
+                crop_by_ratio(
+                    img,
+                    0.00,
+                    0.51,
+                    0.58,
+                    0.84
+                ),
+                2600
+            ),
+
+        "銀行口座":
+            enlarge_image(
+                crop_by_ratio(
+                    img,
+                    0.00,
+                    0.76,
+                    0.58,
+                    1.00
+                ),
+                2400
+            ),
     }
 
 
 # =========================================================
-# 2枚目 クロップ
+# 2枚目
+# 自動分割＋拡大
 # =========================================================
 
 def create_page2_crops(img):
 
     return {
 
-        "住所": crop_by_ratio(
-            img,
-            0.00,
-            0.03,
-            0.56,
-            0.35
-        ),
+        "上半分":
+            enlarge_image(
+                crop_by_ratio(
+                    img,
+                    0.00,
+                    0.00,
+                    1.00,
+                    0.58
+                )
+            ),
 
-        "指導対象・公国私": crop_by_ratio(
-            img,
-            0.42,
-            0.03,
-            1.00,
-            0.36
-        ),
+        "下半分":
+            enlarge_image(
+                crop_by_ratio(
+                    img,
+                    0.00,
+                    0.42,
+                    1.00,
+                    1.00
+                )
+            ),
 
-        "コース名": crop_by_ratio(
-            img,
-            0.00,
-            0.30,
-            0.50,
-            0.70
-        ),
+        "住所・保護者氏名":
+            enlarge_image(
+                crop_by_ratio(
+                    img,
+                    0.00,
+                    0.03,
+                    0.58,
+                    0.34
+                ),
+                2400
+            ),
 
-        "数量表": crop_by_ratio(
-            img,
-            0.35,
-            0.28,
-            0.78,
-            0.78
-        ),
+        "指導対象A・公国私":
+            enlarge_image(
+                crop_by_ratio(
+                    img,
+                    0.40,
+                    0.03,
+                    1.00,
+                    0.36
+                ),
+                2400
+            ),
 
-        # 右上の書面交付日・受領サイン付近だけ
-        "受領サイン": crop_by_ratio(
-            img,
-            0.58,
-            0.12,
-            1.00,
-            0.30
-        )
+        "コース名":
+            enlarge_image(
+                crop_by_ratio(
+                    img,
+                    0.00,
+                    0.28,
+                    0.52,
+                    0.70
+                ),
+                2400
+            ),
+
+        "数量表":
+            enlarge_image(
+                crop_by_ratio(
+                    img,
+                    0.34,
+                    0.30,
+                    0.67,
+                    0.72
+                ),
+                2600
+            ),
+
+        "受領サイン":
+            enlarge_image(
+                crop_by_ratio(
+                    img,
+                    0.58,
+                    0.12,
+                    1.00,
+                    0.30
+                ),
+                2400
+            ),
     }
 
 
 # =========================================================
-# 1枚目 Schema
+# 1枚目 JSON Schema
 # =========================================================
 
 def page1_schema():
@@ -276,120 +339,145 @@ def page1_schema():
 
                 "properties": {
 
-                    "application_date": {
-                        "type": "object",
-                        "properties": {
-                            "has_year": {"type": "boolean"},
-                            "has_month": {"type": "boolean"},
-                            "has_day": {"type": "boolean"}
-                        },
-                        "required": [
-                            "has_year",
-                            "has_month",
-                            "has_day"
-                        ],
-                        "additionalProperties": False
-                    },
-
                     "applicant_name": {
+
                         "type": "object",
+
                         "properties": {
+
                             "has_handwriting": {
                                 "type": "boolean"
+                            },
+
+                            "furigana_has_handwriting": {
+                                "type": "boolean"
                             }
+
                         },
+
                         "required": [
-                            "has_handwriting"
+                            "has_handwriting",
+                            "furigana_has_handwriting"
                         ],
+
                         "additionalProperties": False
                     },
 
-                    "applicant_name_furigana": {
-                        "type": "object",
-                        "properties": {
-                            "has_handwriting": {
-                                "type": "boolean"
-                            }
-                        },
-                        "required": [
-                            "has_handwriting"
-                        ],
-                        "additionalProperties": False
-                    },
 
                     "applicant_address": {
+
                         "type": "object",
+
                         "properties": {
-                            "written_prefecture": {
-                                "type": "string"
-                            },
+
                             "address_has_handwriting": {
                                 "type": "boolean"
                             },
+
+                            "written_prefecture": {
+                                "type": "string"
+                            },
+
                             "address_furigana_has_handwriting": {
                                 "type": "boolean"
                             }
+
                         },
+
                         "required": [
-                            "written_prefecture",
                             "address_has_handwriting",
+                            "written_prefecture",
                             "address_furigana_has_handwriting"
                         ],
+
                         "additionalProperties": False
                     },
 
+
                     "employment": {
+
                         "type": "object",
+
                         "properties": {
+
                             "regular_employee_circled": {
                                 "type": "boolean"
                             },
+
                             "dispatch_employee_circled": {
                                 "type": "boolean"
                             },
+
                             "contract_employee_circled": {
                                 "type": "boolean"
                             },
+
                             "part_time_circled": {
                                 "type": "boolean"
                             },
+
                             "other_circled": {
                                 "type": "boolean"
                             },
+
+                            "uncertain": {
+                                "type": "boolean"
+                            },
+
                             "dispatch_company_has_handwriting": {
                                 "type": "boolean"
                             }
+
                         },
+
                         "required": [
                             "regular_employee_circled",
                             "dispatch_employee_circled",
                             "contract_employee_circled",
                             "part_time_circled",
                             "other_circled",
+                            "uncertain",
                             "dispatch_company_has_handwriting"
                         ],
+
                         "additionalProperties": False
                     },
 
+
                     "household_credit_monthly": {
+
                         "type": "object",
+
                         "properties": {
+
+                            "has_handwriting": {
+                                "type": "boolean"
+                            },
+
                             "written_amount": {
                                 "type": "string"
                             },
-                            "has_handwriting": {
+
+                            "uncertain": {
                                 "type": "boolean"
                             }
+
                         },
+
                         "required": [
+                            "has_handwriting",
                             "written_amount",
-                            "has_handwriting"
+                            "uncertain"
                         ],
+
                         "additionalProperties": False
                     },
 
+
                     "related_person": {
+
                         "type": "object",
+
                         "properties": {
 
                             "applicable": {
@@ -435,6 +523,7 @@ def page1_schema():
                             "required_circle_missing": {
                                 "type": "boolean"
                             }
+
                         },
 
                         "required": [
@@ -454,32 +543,40 @@ def page1_schema():
                         "additionalProperties": False
                     },
 
+
                     "bank_account": {
+
                         "type": "object",
+
                         "properties": {
+
                             "yucho_has_handwriting": {
                                 "type": "boolean"
                             },
+
                             "other_bank_has_handwriting": {
                                 "type": "boolean"
                             },
+
                             "account_name_furigana_has_handwriting": {
                                 "type": "boolean"
                             }
+
                         },
+
                         "required": [
                             "yucho_has_handwriting",
                             "other_bank_has_handwriting",
                             "account_name_furigana_has_handwriting"
                         ],
+
                         "additionalProperties": False
                     }
+
                 },
 
                 "required": [
-                    "application_date",
                     "applicant_name",
-                    "applicant_name_furigana",
                     "applicant_address",
                     "employment",
                     "household_credit_monthly",
@@ -488,8 +585,11 @@ def page1_schema():
                 ],
 
                 "additionalProperties": False
+
             }
+
         }
+
     }
 
 
@@ -505,198 +605,253 @@ def strict_read_page1(img):
 
         {
             "type": "text",
+
             "text": """
-あなたはクレジット申込書の指定欄を
-正確に読み取る担当です。
+あなたはクレジット契約書の
+「記入状態だけ」を読み取る担当です。
 
-OK/NGは判断しません。
+OK・NGは判断しないでください。
 
-実際にその欄に見える
-手書き記入・○・数字だけを返してください。
+全体画像は位置確認に使い、
+細かい文字や○の判定は、
+後から与える拡大画像を優先してください。
 
-絶対に別の欄から補完してはいけません。
 
 ==================================================
 最重要
 ==================================================
 
-・印刷文字は手書き記入として扱わない
+・印刷文字を手書きとして扱わない。
 
-・空欄は空欄として返す
+・別の欄の住所、氏名、電話番号、数字、
+  ○を流用しない。
 
-・○は対象文字そのものに明確に付いている場合だけ true
+・空欄なら空欄。
 
-・住所から都道府県を推測しない
+・分からない場合は推測しない。
 
-・別の人物の住所、電話、フリガナを代用しない
-
-・画像が不鮮明でも勝手に true にしない
+・雇用形態などが拡大画像でも
+  判別しづらい場合は uncertain=true。
 
 
 ==================================================
-申込者住所
+契約者住所
 ==================================================
 
-ご契約者・申込者本人の住所欄を見る。
+ご契約者本人の
+「ご住所」欄そのものを見る。
 
-都道府県が実際に書かれている場合だけ
-written_prefecture に入れる。
+住所に実際の手書きがあれば
+
+address_has_handwriting=true。
+
+
+住所の先頭付近に
+
+北海道
+東京都
+大阪府
+京都府
+兵庫県
+など、
+
+都道府県名が実際に書かれている場合だけ、
+
+written_prefecture
+
+にその文字列を入れる。
+
+
+市区町村から推測禁止。
 
 例：
 
-神戸市灘区～
+「神戸市灘区〜」
 
-だけなら、
+しか見えなければ、
 
-written_prefecture = ""
+written_prefecture=""
 
-兵庫県とは推測しない。
+にする。
 
-住所用フリガナ欄も
-別項目として確認する。
 
-氏名フリガナを住所フリガナとして使わない。
+==================================================
+住所フリガナ
+==================================================
+
+住所に対応している
+住所用フリガナ欄そのものを見る。
+
+そこに手書きのカタカナ等があれば
+
+address_furigana_has_handwriting=true。
+
+
+氏名フリガナを
+住所フリガナとして使わない。
 
 
 ==================================================
 雇用形態
 ==================================================
 
-各雇用形態の文字そのものに
-○が付いているかを別々に確認する。
+雇用形態欄だけを見る。
 
-特に「派遣社員」は、
-その文字自体に明確な○がある場合だけ
+各選択肢の文字そのものに、
 
-dispatch_employee_circled = true
+手書きの○
+囲み
+明確な選択印
 
-にする。
+があるかを確認する。
+
+
+正社員
+
+派遣社員
+
+契約社員
+
+パート・アルバイト
+
+その他
+
+をそれぞれ別に見る。
+
 
 近くの○を誤認しない。
 
-派遣先・出向先会社名についても、
-その指定欄そのものだけを見る。
+印刷された丸や枠線は
+○として扱わない。
+
+
+拡大画像を見ても
+どの選択肢か確信できない場合は
+
+uncertain=true。
+
+
+==================================================
+派遣先・出向先
+==================================================
+
+「派遣先・出向先」
+
+の会社名記入欄そのものを見る。
+
+別の会社名を代用しない。
 
 
 ==================================================
 世帯主クレジット月額
 ==================================================
 
-「世帯主のクレジットの月あたりのお支払額」
-の金額だけを読む。
+必ず、
 
-別の金額を代用しない。
+「世帯主のクレジットの
+月あたりのお支払額」
+
+と印刷された欄そのものを見る。
+
+
+近くにある
+
+世帯主の年収(税込)
+
+税込年収
+
+などの金額は絶対に使わない。
+
+
+月額欄が読めない場合は
+
+uncertain=true。
 
 
 ==================================================
 関係者情報
 ==================================================
 
-関係者情報欄を確認する。
-
-夫が申込者なら妻、
-妻が申込者なら夫の情報。
-
-対象外なら applicable = false。
+下側の「関係者情報」欄だけを見る。
 
 
-【氏名】
+以下を別々に見る。
 
-関係者情報の氏名欄そのもの。
+・氏名
 
+・ご住所
 
-【ご住所】
+・ご住居の○
 
-「ご住所」と印刷された欄そのもの。
+・所在地
 
-記入がなければ false。
+・所在地内の郵便番号
 
+・所在地内の電話番号
 
-【ご住居】
-
-ご住居の選択肢に
-実際に○があるか。
-
-必要な○がなければ
-residence_circle_present = false。
+・携帯番号
 
 
-【所在地】
+所在地は
 
-所在地欄そのものを見る。
+実住所
 
-住所が書かれている
 または
+
 「同上」
 
-なら有効。
-
-「同上」の場合だけ
-
-location_is_same_as_above = true。
-
-所在地欄が完全な空欄なら false。
+なら記入あり。
 
 
-【所在地の郵便番号】
+ただし、
 
-所在地内の郵便番号欄そのものを見る。
-
-別の住所の郵便番号を使わない。
-
-
-【所在地の電話番号】
-
-所在地内の電話番号欄だけを見る。
+所在地が「同上」でも
+郵便番号は別に確認する。
 
 
-【携帯番号】
+電話番号については、
 
-関係者情報内の携帯番号欄を見る。
-
-固定電話とは別。
-
-
-【その他】
-
-関係者情報内で、
-記入必須と思われる通常の欄が
-明らかに空欄なら
-
-other_required_blank = true。
-
-選択式で必要な○が
-明らかに付いていない場合は
-
-required_circle_missing = true。
+固定電話が空欄でも
+携帯番号があれば可。
 
 
 ==================================================
 銀行口座
 ==================================================
 
-ゆうちょ銀行と
-ゆうちょ銀行以外の銀行を区別する。
+ゆうちょ銀行
 
-どちらに記入があるかだけを返す。
+または
+
+ゆうちょ銀行以外
+
+のどちらかに
+記入があるかを見る。
+
 
 口座名義人フリガナは
 その指定欄だけを見る。
 """
         },
 
+
         {
             "type": "text",
-            "text": "以下は1枚目全体です。"
+            "text":
+                "以下は1枚目全体です。"
+                "位置確認だけに使ってください。"
         },
+
 
         {
             "type": "image_url",
+
             "image_url": {
                 "url": pil_to_data_url(img),
                 "detail": "high"
             }
         }
+
     ]
 
 
@@ -705,13 +860,17 @@ required_circle_missing = true。
         content.append(
             {
                 "type": "text",
-                "text": f"以下は【{name}】周辺です。"
+
+                "text":
+                    f"以下は【{name}】の拡大画像です。"
+                    "細かい文字や○はこちらを優先してください。"
             }
         )
 
         content.append(
             {
                 "type": "image_url",
+
                 "image_url": {
                     "url": pil_to_data_url(crop),
                     "detail": "high"
@@ -732,7 +891,9 @@ required_circle_missing = true。
         ],
 
         response_format=page1_schema()
+
     )
+
 
     return json.loads(
         response.choices[0].message.content
@@ -749,106 +910,77 @@ def page1_results(data):
 
 
     # -----------------------------------------------------
-    # お申込年月日
+    # 契約者氏名フリガナ
     # -----------------------------------------------------
 
-    d = data["application_date"]
+    applicant = data[
+        "applicant_name"
+    ]
 
-    ok = (
-        d["has_year"]
-        and d["has_month"]
-        and d["has_day"]
-    )
-
-    results.append(
-        {
-            "name": "お申込年月日",
-            "status": "ok" if ok else "missing",
-            "observed_value": "年月日記入あり" if ok else "一部または全部空欄",
-            "reason": (
-                "年・月・日を確認しました。"
-                if ok
-                else "お申込年月日の必要箇所が不足しています。"
-            )
-        }
-    )
-
-
-    # -----------------------------------------------------
-    # 氏名
-    # -----------------------------------------------------
-
-    ok = data["applicant_name"]["has_handwriting"]
-
-    results.append(
-        {
-            "name": "ご契約者氏名",
-            "status": "ok" if ok else "missing",
-            "observed_value": "記入あり" if ok else "空欄",
-            "reason": (
-                "氏名欄に記入があります。"
-                if ok
-                else "氏名欄に記入を確認できません。"
-            )
-        }
-    )
-
-
-    # -----------------------------------------------------
-    # 氏名フリガナ
-    # -----------------------------------------------------
-
-    ok = data[
-        "applicant_name_furigana"
-    ][
-        "has_handwriting"
+    ok = applicant[
+        "furigana_has_handwriting"
     ]
 
     results.append(
         {
-            "name": "ご契約者氏名フリガナ",
-            "status": "ok" if ok else "missing",
-            "observed_value": "記入あり" if ok else "空欄",
-            "reason": (
-                "氏名フリガナ欄に記入があります。"
+            "name":
+                "ご契約者氏名フリガナ",
+
+            "status":
+                "ok" if ok else "missing",
+
+            "observed_value":
+                "記入あり"
                 if ok
-                else "氏名フリガナ欄が空欄です。"
-            )
+                else "空欄",
+
+            "reason":
+                "氏名フリガナ欄そのものを確認しました。"
         }
     )
 
 
     # -----------------------------------------------------
-    # ご契約者住所
+    # 契約者住所
     # -----------------------------------------------------
 
-    address = data["applicant_address"]
+    address = data[
+        "applicant_address"
+    ]
 
     prefecture = address[
         "written_prefecture"
     ].strip()
 
-    prefecture_ok = prefecture in PREFECTURES
-
     address_ok = (
-        address["address_has_handwriting"]
-        and prefecture_ok
+        address[
+            "address_has_handwriting"
+        ]
+        and
+        prefecture in PREFECTURES
     )
+
 
     results.append(
         {
-            "name": "ご契約者住所",
-            "status": "ok" if address_ok else "missing",
-            "observed_value": (
-                f"都道府県：{prefecture}"
-                if prefecture
-                else "都道府県：確認できず"
-            ),
-            "reason": (
-                "都道府県から住所が記入されています。"
+            "name":
+                "ご契約者住所",
+
+            "status":
+                "ok"
                 if address_ok
-                else "ご住所は都道府県から記入する必要があります。"
-            )
+                else "missing",
+
+            "observed_value":
+                (
+                    f"都道府県：{prefecture}"
+                    if prefecture
+                    else
+                    "都道府県：確認できず"
+                ),
+
+            "reason":
+                "都道府県から記入されているかを確認しました。"
         }
     )
 
@@ -861,16 +993,26 @@ def page1_results(data):
         "address_furigana_has_handwriting"
     ]
 
+
     results.append(
         {
-            "name": "ご契約者住所フリガナ",
-            "status": "ok" if furigana_ok else "missing",
-            "observed_value": "記入あり" if furigana_ok else "空欄",
-            "reason": (
-                "住所用フリガナ欄に記入があります。"
+            "name":
+                "ご契約者住所フリガナ",
+
+            "status":
+                "ok"
                 if furigana_ok
-                else "住所用フリガナ欄に記入がありません。"
-            )
+                else "missing",
+
+            "observed_value":
+                (
+                    "記入あり"
+                    if furigana_ok
+                    else "空欄"
+                ),
+
+            "reason":
+                "住所用フリガナ欄そのものを確認しました。"
         }
     )
 
@@ -879,52 +1021,113 @@ def page1_results(data):
     # 雇用形態
     # -----------------------------------------------------
 
-    emp = data["employment"]
+    emp = data[
+        "employment"
+    ]
 
     selected = []
 
-    if emp["regular_employee_circled"]:
-        selected.append("正社員")
 
-    if emp["dispatch_employee_circled"]:
-        selected.append("派遣社員")
-
-    if emp["contract_employee_circled"]:
-        selected.append("契約社員")
-
-    if emp["part_time_circled"]:
-        selected.append("パート・アルバイト")
-
-    if emp["other_circled"]:
-        selected.append("その他")
+    if emp[
+        "regular_employee_circled"
+    ]:
+        selected.append(
+            "正社員"
+        )
 
 
-    if len(selected) == 1:
+    if emp[
+        "dispatch_employee_circled"
+    ]:
+        selected.append(
+            "派遣社員"
+        )
 
-        status = "ok"
-        reason = "雇用形態の選択を確認しました."
 
-    elif len(selected) == 0:
+    if emp[
+        "contract_employee_circled"
+    ]:
+        selected.append(
+            "契約社員"
+        )
 
-        status = "missing"
-        reason = "雇用形態の○を確認できません。"
+
+    if emp[
+        "part_time_circled"
+    ]:
+        selected.append(
+            "パート・アルバイト"
+        )
+
+
+    if emp[
+        "other_circled"
+    ]:
+        selected.append(
+            "その他"
+        )
+
+
+    if emp[
+        "uncertain"
+    ]:
+
+        emp_status = "uncertain"
+
+        emp_reason = (
+            "雇用形態の○を"
+            "拡大画像でも確実に判別できません。"
+        )
+
+
+    elif len(
+        selected
+    ) == 1:
+
+        emp_status = "ok"
+
+        emp_reason = (
+            "雇用形態の選択を確認しました。"
+        )
+
+
+    elif len(
+        selected
+    ) == 0:
+
+        emp_status = "missing"
+
+        emp_reason = (
+            "雇用形態の○を確認できません。"
+        )
+
 
     else:
 
-        status = "warning"
-        reason = "雇用形態が複数選択されています。"
+        emp_status = "warning"
+
+        emp_reason = (
+            "雇用形態が複数選択されています。"
+        )
 
 
     results.append(
         {
-            "name": "雇用形態",
-            "status": status,
-            "observed_value": (
-                "・".join(selected)
-                if selected
-                else "○なし"
-            ),
-            "reason": reason
+            "name":
+                "雇用形態",
+
+            "status":
+                emp_status,
+
+            "observed_value":
+                (
+                    "・".join(selected)
+                    if selected
+                    else "○なし"
+                ),
+
+            "reason":
+                emp_reason
         }
     )
 
@@ -933,36 +1136,63 @@ def page1_results(data):
     # 派遣先
     # -----------------------------------------------------
 
-    if emp["dispatch_employee_circled"]:
+    if emp[
+        "dispatch_employee_circled"
+    ]:
 
-        if emp["dispatch_company_has_handwriting"]:
+        dispatch_ok = emp[
+            "dispatch_company_has_handwriting"
+        ]
 
-            status = "ok"
-            reason = "派遣社員のため、派遣先会社名を確認しました。"
 
-        else:
+        results.append(
+            {
+                "name":
+                    "派遣先・出向先",
 
-            status = "missing"
-            reason = "派遣社員ですが、派遣先・出向先の会社名が空欄です。"
+                "status":
+                    (
+                        "ok"
+                        if dispatch_ok
+                        else "missing"
+                    ),
+
+                "observed_value":
+                    (
+                        "記入あり"
+                        if dispatch_ok
+                        else "空欄"
+                    ),
+
+                "reason":
+                    "派遣社員の場合のみ必須です。"
+            }
+        )
+
 
     else:
 
-        status = "not_applicable"
-        reason = "派遣社員ではないため、この欄は対象外です。"
+        results.append(
+            {
+                "name":
+                    "派遣先・出向先",
 
+                "status":
+                    "not_applicable",
 
-    results.append(
-        {
-            "name": "派遣先・出向先",
-            "status": status,
-            "observed_value": (
-                "記入あり"
-                if emp["dispatch_company_has_handwriting"]
-                else "空欄"
-            ),
-            "reason": reason
-        }
-    )
+                "observed_value":
+                    (
+                        "空欄"
+                        if not emp[
+                            "dispatch_company_has_handwriting"
+                        ]
+                        else "記入あり"
+                    ),
+
+                "reason":
+                    "派遣社員ではないため対象外です。"
+            }
+        )
 
 
     # -----------------------------------------------------
@@ -973,52 +1203,84 @@ def page1_results(data):
         "household_credit_monthly"
     ]
 
-    amount_text = household[
-        "written_amount"
-    ]
 
-    amount = None
+    if (
+        household[
+            "uncertain"
+        ]
+        or
+        not household[
+            "has_handwriting"
+        ]
+    ):
 
-    if household[
-        "has_handwriting"
-    ]:
+        amount = None
+
+
+    else:
 
         digits = re.sub(
             r"[^\d]",
             "",
-            amount_text
+            household[
+                "written_amount"
+            ]
         )
 
-        if digits:
-            amount = int(digits)
+        amount = (
+            int(digits)
+            if digits
+            else None
+        )
 
 
     if amount is None:
 
         status = "uncertain"
-        reason = "月あたりのお支払額を確実に読み取れません。"
+
+        reason = (
+            "月あたりのお支払額を"
+            "確実に読み取れません。"
+        )
+
 
     elif amount > 100000:
 
         status = "warning"
-        reason = "月あたりのお支払額が100,000円を超えています。"
+
+        reason = (
+            "月あたりのお支払額が"
+            "100,000円を超えています。"
+        )
+
 
     else:
 
         status = "ok"
-        reason = "月あたりのお支払額は100,000円以下です。"
+
+        reason = (
+            "月あたりのお支払額は"
+            "100,000円以下です。"
+        )
 
 
     results.append(
         {
-            "name": "世帯主クレジット月額",
-            "status": status,
-            "observed_value": (
-                f"{amount:,}円"
-                if amount is not None
-                else "読取不能"
-            ),
-            "reason": reason
+            "name":
+                "世帯主クレジット月額",
+
+            "status":
+                status,
+
+            "observed_value":
+                (
+                    f"{amount:,}円"
+                    if amount is not None
+                    else "読取不能"
+                ),
+
+            "reason":
+                reason
         }
     )
 
@@ -1032,185 +1294,233 @@ def page1_results(data):
     ]
 
 
-    if not rel["applicable"]:
+    if not rel[
+        "applicable"
+    ]:
 
-        relation_items = [
+        results.append(
             {
-                "name": "関係者情報",
-                "status": "not_applicable",
-                "observed_value": "",
-                "reason": "関係者情報の記入対象外と判定しました。"
+                "name":
+                    "関係者情報",
+
+                "status":
+                    "not_applicable",
+
+                "observed_value":
+                    "",
+
+                "reason":
+                    "関係者情報の対象外です。"
             }
-        ]
+        )
+
 
     else:
 
-        relation_items = []
+        checks = [
 
+            (
+                "関係者情報・氏名",
+                rel[
+                    "name_has_handwriting"
+                ],
+                "記入あり",
+                "空欄"
+            ),
 
-        # 氏名
-        ok = rel["name_has_handwriting"]
+            (
+                "関係者情報・ご住所",
+                rel[
+                    "address_has_handwriting"
+                ],
+                "記入あり",
+                "空欄"
+            ),
 
-        relation_items.append(
-            {
-                "name": "関係者情報・氏名",
-                "status": "ok" if ok else "missing",
-                "observed_value": "記入あり" if ok else "空欄",
-                "reason": (
-                    "氏名欄に記入があります。"
-                    if ok
-                    else "関係者氏名が空欄です。"
-                )
-            }
-        )
+            (
+                "関係者情報・ご住居",
+                rel[
+                    "residence_circle_present"
+                ],
+                "○あり",
+                "○なし"
+            ),
 
+            (
+                "関係者情報・郵便番号",
+                rel[
+                    "postal_code_has_handwriting"
+                ],
+                "記入あり",
+                "空欄"
+            )
 
-        # ご住所
-        ok = rel["address_has_handwriting"]
-
-        relation_items.append(
-            {
-                "name": "関係者情報・ご住所",
-                "status": "ok" if ok else "missing",
-                "observed_value": "記入あり" if ok else "空欄",
-                "reason": (
-                    "ご住所欄に記入があります。"
-                    if ok
-                    else "関係者情報のご住所欄が空欄です。"
-                )
-            }
-        )
-
-
-        # ご住居
-        ok = rel[
-            "residence_circle_present"
         ]
 
-        relation_items.append(
-            {
-                "name": "関係者情報・ご住居",
-                "status": "ok" if ok else "missing",
-                "observed_value": "○あり" if ok else "○なし",
-                "reason": (
-                    "ご住居の選択を確認しました。"
-                    if ok
-                    else "ご住居の必要な選択に○がありません。"
-                )
-            }
-        )
+
+        for (
+            name,
+            ok,
+            yes_text,
+            no_text
+        ) in checks:
+
+            results.append(
+                {
+                    "name":
+                        name,
+
+                    "status":
+                        (
+                            "ok"
+                            if ok
+                            else "missing"
+                        ),
+
+                    "observed_value":
+                        (
+                            yes_text
+                            if ok
+                            else no_text
+                        ),
+
+                    "reason":
+                        "指定欄そのものを確認しました。"
+                }
+            )
 
 
-        # 所在地
         location_ok = (
-            rel["location_has_handwriting"]
+            rel[
+                "location_has_handwriting"
+            ]
             or
-            rel["location_is_same_as_above"]
+            rel[
+                "location_is_same_as_above"
+            ]
         )
 
-        relation_items.append(
+
+        results.append(
             {
-                "name": "関係者情報・所在地",
-                "status": "ok" if location_ok else "missing",
-                "observed_value": (
-                    "同上"
-                    if rel["location_is_same_as_above"]
-                    else
-                    "記入あり"
-                    if rel["location_has_handwriting"]
-                    else
-                    "空欄"
-                ),
-                "reason": (
-                    "所在地を確認しました。"
-                    if location_ok
-                    else "所在地が空欄です。"
-                )
+                "name":
+                    "関係者情報・所在地",
+
+                "status":
+                    (
+                        "ok"
+                        if location_ok
+                        else "missing"
+                    ),
+
+                "observed_value":
+                    (
+                        "同上"
+                        if rel[
+                            "location_is_same_as_above"
+                        ]
+                        else
+                        "記入あり"
+                        if rel[
+                            "location_has_handwriting"
+                        ]
+                        else
+                        "空欄"
+                    ),
+
+                "reason":
+                    "所在地は実住所または『同上』なら可です。"
             }
         )
 
 
-        # 郵便番号
-        ok = rel[
-            "postal_code_has_handwriting"
-        ]
-
-        relation_items.append(
-            {
-                "name": "関係者情報・郵便番号",
-                "status": "ok" if ok else "missing",
-                "observed_value": "記入あり" if ok else "空欄",
-                "reason": (
-                    "所在地の郵便番号を確認しました。"
-                    if ok
-                    else "所在地の郵便番号が空欄です。"
-                )
-            }
-        )
-
-
-        # 電話番号
-        telephone_ok = (
-            rel["telephone_has_handwriting"]
+        contact_ok = (
+            rel[
+                "telephone_has_handwriting"
+            ]
             or
-            rel["mobile_has_handwriting"]
+            rel[
+                "mobile_has_handwriting"
+            ]
         )
 
-        relation_items.append(
+
+        results.append(
             {
-                "name": "関係者情報・電話番号",
-                "status": "ok" if telephone_ok else "missing",
-                "observed_value": (
-                    "固定電話あり"
-                    if rel["telephone_has_handwriting"]
-                    else
-                    "携帯番号あり"
-                    if rel["mobile_has_handwriting"]
-                    else
-                    "両方空欄"
-                ),
-                "reason": (
-                    "固定電話または携帯番号を確認しました。"
-                    if telephone_ok
-                    else "固定電話・携帯番号の両方が空欄です。"
-                )
+                "name":
+                    "関係者情報・電話番号",
+
+                "status":
+                    (
+                        "ok"
+                        if contact_ok
+                        else "missing"
+                    ),
+
+                "observed_value":
+                    (
+                        "固定電話あり"
+                        if rel[
+                            "telephone_has_handwriting"
+                        ]
+                        else
+                        "携帯番号あり"
+                        if rel[
+                            "mobile_has_handwriting"
+                        ]
+                        else
+                        "両方空欄"
+                    ),
+
+                "reason":
+                    (
+                        "携帯番号があれば"
+                        "固定電話は空欄でも可です。"
+                    )
             }
         )
 
 
-        # その他の空欄
         if rel[
             "other_required_blank"
         ]:
 
-            relation_items.append(
+            results.append(
                 {
-                    "name": "関係者情報・その他必要項目",
-                    "status": "missing",
-                    "observed_value": "空欄あり",
-                    "reason": "関係者情報内にその他の必要な空欄があります。"
+                    "name":
+                        "関係者情報・その他必要項目",
+
+                    "status":
+                        "missing",
+
+                    "observed_value":
+                        "空欄あり",
+
+                    "reason":
+                        "その他の必須欄に空欄があります。"
                 }
             )
 
 
-        # その他の○
         if rel[
             "required_circle_missing"
         ]:
 
-            relation_items.append(
+            results.append(
                 {
-                    "name": "関係者情報・その他選択項目",
-                    "status": "missing",
-                    "observed_value": "○なし",
-                    "reason": "関係者情報内の必要な選択に○がありません。"
+                    "name":
+                        "関係者情報・その他選択項目",
+
+                    "status":
+                        "missing",
+
+                    "observed_value":
+                        "○なし",
+
+                    "reason":
+                        "必要な選択項目に○がありません。"
                 }
             )
-
-
-    results.extend(
-        relation_items
-    )
 
 
     # -----------------------------------------------------
@@ -1222,51 +1532,69 @@ def page1_results(data):
     ]
 
     account_ok = (
-        bank["yucho_has_handwriting"]
+        bank[
+            "yucho_has_handwriting"
+        ]
         or
-        bank["other_bank_has_handwriting"]
+        bank[
+            "other_bank_has_handwriting"
+        ]
     )
+
 
     results.append(
         {
-            "name": "銀行口座",
-            "status": "ok" if account_ok else "missing",
-            "observed_value": (
-                "ゆうちょ記入あり"
-                if bank["yucho_has_handwriting"]
-                else
-                "ゆうちょ以外記入あり"
-                if bank["other_bank_has_handwriting"]
-                else
-                "両方空欄"
-            ),
-            "reason": (
-                "どちらか一方の銀行口座情報を確認しました。"
-                if account_ok
-                else "銀行口座情報が記入されていません。"
-            )
+            "name":
+                "銀行口座",
+
+            "status":
+                (
+                    "ok"
+                    if account_ok
+                    else "missing"
+                ),
+
+            "observed_value":
+                (
+                    "記入あり"
+                    if account_ok
+                    else "両方空欄"
+                ),
+
+            "reason":
+                (
+                    "ゆうちょ銀行または"
+                    "ゆうちょ以外のどちらか一方で可です。"
+                )
         }
     )
 
 
-    # -----------------------------------------------------
-    # 口座名義人フリガナ
-    # -----------------------------------------------------
-
-    ok = bank[
-        "account_name_furigana_has_handwriting"
-    ]
-
     results.append(
         {
-            "name": "口座名義人フリガナ",
-            "status": "ok" if ok else "missing",
-            "observed_value": "記入あり" if ok else "空欄",
-            "reason": (
-                "口座名義人フリガナを確認しました。"
-                if ok
-                else "口座名義人フリガナが空欄です。"
-            )
+            "name":
+                "口座名義人フリガナ",
+
+            "status":
+                (
+                    "ok"
+                    if bank[
+                        "account_name_furigana_has_handwriting"
+                    ]
+                    else "missing"
+                ),
+
+            "observed_value":
+                (
+                    "記入あり"
+                    if bank[
+                        "account_name_furigana_has_handwriting"
+                    ]
+                    else "空欄"
+                ),
+
+            "reason":
+                "口座名義人フリガナ欄を確認しました。"
         }
     )
 
@@ -1282,45 +1610,67 @@ def page2_schema():
 
     return {
 
-        "type": "json_schema",
+        "type":
+            "json_schema",
 
         "json_schema": {
 
-            "name": "page2_read",
+            "name":
+                "page2_read",
 
-            "strict": True,
+            "strict":
+                True,
 
             "schema": {
 
-                "type": "object",
+                "type":
+                    "object",
 
                 "properties": {
 
                     "guardian_name": {
-                        "type": "object",
+
+                        "type":
+                            "object",
+
                         "properties": {
+
                             "has_handwriting": {
                                 "type": "boolean"
                             },
+
                             "furigana_has_handwriting": {
                                 "type": "boolean"
                             }
+
                         },
+
                         "required": [
                             "has_handwriting",
                             "furigana_has_handwriting"
                         ],
-                        "additionalProperties": False
+
+                        "additionalProperties":
+                            False
                     },
 
+
                     "address": {
-                        "type": "object",
+
+                        "type":
+                            "object",
+
                         "properties": {
+
                             "written_prefecture": {
                                 "type": "string"
                             },
+
                             "circle_mark": {
-                                "type": "string",
+
+                                "type":
+                                    "string",
+
                                 "enum": [
                                     "都",
                                     "道",
@@ -1329,152 +1679,202 @@ def page2_schema():
                                     "none",
                                     "uncertain"
                                 ]
+
                             }
+
                         },
+
                         "required": [
                             "written_prefecture",
                             "circle_mark"
                         ],
-                        "additionalProperties": False
+
+                        "additionalProperties":
+                            False
                     },
 
+
                     "target_a": {
-                        "type": "object",
+
+                        "type":
+                            "object",
+
                         "properties": {
+
                             "yes_is_circled": {
                                 "type": "boolean"
                             }
+
                         },
+
                         "required": [
                             "yes_is_circled"
                         ],
-                        "additionalProperties": False
+
+                        "additionalProperties":
+                            False
                     },
 
+
                     "school_type": {
-                        "type": "object",
+
+                        "type":
+                            "object",
+
                         "properties": {
+
                             "public_circled": {
                                 "type": "boolean"
                             },
+
                             "national_circled": {
                                 "type": "boolean"
                             },
+
                             "private_circled": {
                                 "type": "boolean"
                             },
+
                             "uncertain": {
                                 "type": "boolean"
                             }
+
                         },
+
                         "required": [
                             "public_circled",
                             "national_circled",
                             "private_circled",
                             "uncertain"
                         ],
-                        "additionalProperties": False
+
+                        "additionalProperties":
+                            False
                     },
 
+
                     "course_name": {
-                        "type": "object",
+
+                        "type":
+                            "object",
+
                         "properties": {
+
                             "written_text": {
                                 "type": "string"
                             },
+
                             "has_handwriting": {
                                 "type": "boolean"
                             }
+
                         },
+
                         "required": [
                             "written_text",
                             "has_handwriting"
                         ],
-                        "additionalProperties": False
+
+                        "additionalProperties":
+                            False
                     },
 
-                    "initial_instruction_date": {
-                        "type": "object",
-                        "properties": {
-                            "has_handwriting": {
-                                "type": "boolean"
-                            }
-                        },
-                        "required": [
-                            "has_handwriting"
-                        ],
-                        "additionalProperties": False
-                    },
-
-                    "service_period_a": {
-                        "type": "object",
-                        "properties": {
-                            "has_handwriting": {
-                                "type": "boolean"
-                            }
-                        },
-                        "required": [
-                            "has_handwriting"
-                        ],
-                        "additionalProperties": False
-                    },
 
                     "quantity": {
-                        "type": "object",
+
+                        "type":
+                            "object",
+
                         "properties": {
+
                             "rows": {
-                                "type": "array",
+
+                                "type":
+                                    "array",
+
                                 "items": {
-                                    "type": "object",
+
+                                    "type":
+                                        "object",
+
                                     "properties": {
+
                                         "row_label": {
                                             "type": "string"
                                         },
+
                                         "horizontal_values": {
-                                            "type": "array",
+
+                                            "type":
+                                                "array",
+
                                             "items": {
                                                 "type": "integer"
                                             }
+
                                         },
+
                                         "written_quantity": {
                                             "type": "string"
                                         },
+
                                         "quantity_box_has_handwriting": {
                                             "type": "boolean"
                                         }
+
                                     },
+
                                     "required": [
                                         "row_label",
                                         "horizontal_values",
                                         "written_quantity",
                                         "quantity_box_has_handwriting"
                                     ],
-                                    "additionalProperties": False
+
+                                    "additionalProperties":
+                                        False
+
                                 }
+
                             }
+
                         },
+
                         "required": [
                             "rows"
                         ],
-                        "additionalProperties": False
+
+                        "additionalProperties":
+                            False
                     },
 
+
                     "receipt_signature": {
-                        "type": "object",
+
+                        "type":
+                            "object",
+
                         "properties": {
-                            "written_text": {
-                                "type": "string"
-                            },
+
                             "has_handwriting": {
                                 "type": "boolean"
+                            },
+
+                            "written_text": {
+                                "type": "string"
                             }
+
                         },
+
                         "required": [
-                            "written_text",
-                            "has_handwriting"
+                            "has_handwriting",
+                            "written_text"
                         ],
-                        "additionalProperties": False
+
+                        "additionalProperties":
+                            False
                     }
+
                 },
 
                 "required": [
@@ -1483,15 +1883,17 @@ def page2_schema():
                     "target_a",
                     "school_type",
                     "course_name",
-                    "initial_instruction_date",
-                    "service_period_a",
                     "quantity",
                     "receipt_signature"
                 ],
 
-                "additionalProperties": False
+                "additionalProperties":
+                    False
+
             }
+
         }
+
     }
 
 
@@ -1506,57 +1908,51 @@ def strict_read_page2(img):
     content = [
 
         {
-            "type": "text",
+            "type":
+                "text",
+
             "text": """
-あなたは役務申込書の指定欄を
-正確に読み取る担当です。
+あなたは役務申込書の
+記入状態を読み取る担当です。
 
-OK/NGは判断しません。
+OK・NGは判断せず、
+指定欄そのものの事実だけを返してください。
 
-指定欄そのものに見える
-手書き文字・数字・○だけを返してください。
+全体画像は位置確認に使い、
+細かい文字や○は
+拡大画像を優先してください。
 
-別の欄の情報を代用してはいけません。
 
-==================================================
-住所
-==================================================
+【住所】
 
-「ご住所・連絡先」の住所欄を見る。
+都道府県名が実際に
+書かれている場合だけ
 
-都道府県名が実際に書かれている場合だけ
-written_prefecture に入れる。
+written_prefecture
 
-神戸市と書かれているだけなら
-兵庫県と推測しない。
+に入れる。
 
-また、
+市区町村から推測しない。
+
 
 都
 道
 府
 県
 
-のどの文字に実際に○が付いているかを見る。
+の○は、
+その文字そのものの○だけを見る。
 
 
-==================================================
-指導対象A
-==================================================
-
-指導対象Aの
+【指導対象A】
 
 「有」
 
-そのものに明確な○がある場合だけ
-yes_is_circled = true。
-
-近くの別の○を使わない。
+そのものに
+明確な○がある場合だけ true。
 
 
-==================================================
-公・国・私
-==================================================
+【公・国・私】
 
 公
 国
@@ -1564,142 +1960,121 @@ yes_is_circled = true。
 
 の3文字そのものだけを見る。
 
-それぞれに○があるかを確認する。
 
-別の○を混同しない。
+【コース名】
 
-
-==================================================
-コース名
-==================================================
-
-「コース名」の指定欄だけを見る。
+指定のコース名欄だけを見る。
 
 必要なのは
 
 週1 90分
 
-という内容。
+の記載。
 
-4回/月などの別欄を代用しない。
-
-
-==================================================
-初回指導日
-==================================================
-
-「初回指導日」欄そのものだけを見る。
-
-別の日付を代用しない。
+4回/月など別欄を代用しない。
 
 
-==================================================
-役務提供期間
-==================================================
+【数量】
 
-A行だけを見る。
+印刷された見出し
 
-B行は判定しない。
+「数量」
+
+を探す。
+
+その見出しの
+真下の列だけを
+数量欄として扱う。
 
 
-==================================================
-数量
-==================================================
+数量列より右側の
 
-中央の商品表を行ごとに確認する。
+各単価
 
-同じ行の学年等の欄に
+小計
 
-1
-1
-1
+商品定価合計
 
-とあれば
+消費税
 
-horizontal_values = [1, 1, 1]
+税込価格
 
-とする。
+申込合計額
+
+などの金額を
+絶対に数量として使わない。
+
+
+各商品行について、
+
+横方向の手書き数字を
+
+horizontal_values
+
+に入れる。
+
 
 その同じ行の
-「数量」列だけを見る。
+数量欄だけを
+
+written_quantity
+
+に入れる。
+
 
 数量欄が空欄なら
 
-written_quantity = ""
+written_quantity=""
 
-quantity_box_has_handwriting = false。
-
-
-各単価
-小計
-商品定価合計
-税込価格
-消費税
-お申込合計
-
-などの金額は絶対に数量として読まない。
-
-648000
-712800
-108000
-36000
-
-などを数量として使わない。
+quantity_box_has_handwriting=false。
 
 
-==================================================
-受領サイン
-==================================================
+【受領サイン】
 
-ここは非常に重要。
-
-2枚目右上の
+右上の
 
 「書面交付日」
 
-の右側に印刷されている
+の右にある
 
 「受領サイン →」
 
-という文字の
-さらに右側にある横長の署名欄だけを見る。
+の直後の横長欄だけを見る。
 
-その欄に手書き文字がある場合だけ
-has_handwriting = true。
 
-それ以外の場所の氏名は
-絶対に受領サインとして使わない。
+他の氏名は絶対に使わない。
 
-特に、
 
-保護者氏名
-指導対象Aの氏名
-申込者氏名
-担当者氏名
-販売担当者氏名
+その欄が空欄なら
 
-は受領サインではない。
-
-この指定欄が空欄なら
-
-written_text = ""
-
-has_handwriting = false
+has_handwriting=false。
 """
         },
 
-        {
-            "type": "text",
-            "text": "以下は2枚目全体です。"
-        },
 
         {
-            "type": "image_url",
+            "type":
+                "text",
+
+            "text":
+                "以下は2枚目全体です。"
+        },
+
+
+        {
+            "type":
+                "image_url",
+
             "image_url": {
-                "url": pil_to_data_url(img),
-                "detail": "high"
+
+                "url":
+                    pil_to_data_url(img),
+
+                "detail":
+                    "high"
             }
         }
+
     ]
 
 
@@ -1707,17 +2082,26 @@ has_handwriting = false
 
         content.append(
             {
-                "type": "text",
-                "text": f"以下は【{name}】周辺です。"
+                "type":
+                    "text",
+
+                "text":
+                    f"以下は【{name}】の拡大画像です。"
             }
         )
 
         content.append(
             {
-                "type": "image_url",
+                "type":
+                    "image_url",
+
                 "image_url": {
-                    "url": pil_to_data_url(crop),
-                    "detail": "high"
+
+                    "url":
+                        pil_to_data_url(crop),
+
+                    "detail":
+                        "high"
                 }
             }
         )
@@ -1729,13 +2113,19 @@ has_handwriting = false
 
         messages=[
             {
-                "role": "user",
-                "content": content
+                "role":
+                    "user",
+
+                "content":
+                    content
             }
         ],
 
-        response_format=page2_schema()
+        response_format=
+            page2_schema()
+
     )
+
 
     return json.loads(
         response.choices[0].message.content
@@ -1743,10 +2133,12 @@ has_handwriting = false
 
 
 # =========================================================
-# 都道府県の○
+# 都道府県○
 # =========================================================
 
-def expected_prefecture_mark(prefecture):
+def expected_prefecture_mark(
+    prefecture
+):
 
     if prefecture == "東京都":
         return "都"
@@ -1760,7 +2152,9 @@ def expected_prefecture_mark(prefecture):
     ]:
         return "府"
 
-    if prefecture.endswith("県"):
+    if prefecture.endswith(
+        "県"
+    ):
         return "県"
 
     return None
@@ -1775,59 +2169,39 @@ def page2_results(data):
     results = []
 
 
-    # -----------------------------------------------------
-    # 保護者氏名
-    # -----------------------------------------------------
-
-    guardian = data["guardian_name"]
-
-    results.append(
-        {
-            "name": "保護者氏名",
-            "status": (
-                "ok"
-                if guardian["has_handwriting"]
-                else "missing"
-            ),
-            "observed_value": (
-                "記入あり"
-                if guardian["has_handwriting"]
-                else "空欄"
-            ),
-            "reason": (
-                "保護者氏名を確認しました。"
-                if guardian["has_handwriting"]
-                else "保護者氏名が空欄です。"
-            )
-        }
-    )
+    guardian = data[
+        "guardian_name"
+    ]
 
 
     results.append(
         {
-            "name": "保護者氏名フリガナ",
-            "status": (
-                "ok"
-                if guardian[
-                    "furigana_has_handwriting"
-                ]
-                else "missing"
-            ),
-            "observed_value": (
-                "記入あり"
-                if guardian[
-                    "furigana_has_handwriting"
-                ]
-                else "空欄"
-            ),
-            "reason": (
-                "保護者氏名フリガナを確認しました。"
-                if guardian[
-                    "furigana_has_handwriting"
-                ]
-                else
-                "保護者氏名に対応するフリガナ欄が空欄です。"
-            )
+            "name":
+                "保護者氏名フリガナ",
+
+            "status":
+                (
+                    "ok"
+                    if guardian[
+                        "furigana_has_handwriting"
+                    ]
+                    else "missing"
+                ),
+
+            "observed_value":
+                (
+                    "記入あり"
+                    if guardian[
+                        "furigana_has_handwriting"
+                    ]
+                    else "空欄"
+                ),
+
+            "reason":
+                (
+                    "保護者氏名に対応する"
+                    "フリガナ欄を確認しました。"
+                )
         }
     )
 
@@ -1836,9 +2210,11 @@ def page2_results(data):
     # 住所
     # -----------------------------------------------------
 
-    address = data["address"]
+    address = data[
+        "address"
+    ]
 
-    prefecture = address[
+    pref = address[
         "written_prefecture"
     ].strip()
 
@@ -1846,54 +2222,90 @@ def page2_results(data):
         "circle_mark"
     ]
 
-    valid_prefecture = (
-        prefecture in PREFECTURES
+    valid_pref = (
+        pref in PREFECTURES
     )
 
     expected = (
-        expected_prefecture_mark(prefecture)
-        if valid_prefecture
+        expected_prefecture_mark(
+            pref
+        )
+        if valid_pref
         else None
     )
 
 
     if (
-        valid_prefecture
-        and mark == expected
+        valid_pref
+        and
+        mark == expected
     ):
 
         status = "ok"
-        reason = "都道府県名と対応する○を確認しました。"
 
-    elif not valid_prefecture:
+        reason = (
+            "都道府県名と"
+            "対応する○を確認しました。"
+        )
 
-        status = "missing"
-        reason = "住所欄に都道府県名まで記入されていません。"
 
-    elif mark in [
-        "none",
-        "uncertain"
-    ]:
+    elif not valid_pref:
 
         status = "missing"
-        reason = "都・道・府・県の対応箇所に○がありません。"
+
+        reason = (
+            "住所欄に都道府県名まで"
+            "記入されていません。"
+        )
+
+
+    elif mark == "none":
+
+        status = "missing"
+
+        reason = (
+            "都・道・府・県の"
+            "○を確認できません。"
+        )
+
+
+    elif mark == "uncertain":
+
+        status = "uncertain"
+
+        reason = (
+            "都・道・府・県の○を"
+            "確実に判定できません。"
+        )
+
 
     else:
 
         status = "warning"
-        reason = "都道府県と○の位置が一致していません。"
+
+        reason = (
+            "都道府県と○の位置が"
+            "一致していません。"
+        )
 
 
     results.append(
         {
-            "name": "ご住所・連絡先",
-            "status": status,
-            "observed_value": (
-                f"都道府県："
-                f"{prefecture if prefecture else '確認できず'}"
-                f" / ○：{mark}"
-            ),
-            "reason": reason
+            "name":
+                "ご住所・連絡先",
+
+            "status":
+                status,
+
+            "observed_value":
+                (
+                    f"都道府県："
+                    f"{pref if pref else '確認できず'}"
+                    f" / ○：{mark}"
+                ),
+
+            "reason":
+                reason
         }
     )
 
@@ -1908,16 +2320,31 @@ def page2_results(data):
         "yes_is_circled"
     ]
 
+
     results.append(
         {
-            "name": "指導対象A",
-            "status": "ok" if ok else "missing",
-            "observed_value": "有に○あり" if ok else "有に○なし",
-            "reason": (
-                "指導対象Aの「有」に○があります。"
-                if ok
-                else "指導対象Aの「有」に○がありません。"
-            )
+            "name":
+                "指導対象A",
+
+            "status":
+                (
+                    "ok"
+                    if ok
+                    else "missing"
+                ),
+
+            "observed_value":
+                (
+                    "有に○あり"
+                    if ok
+                    else "有に○なし"
+                ),
+
+            "reason":
+                (
+                    "指導対象Aの"
+                    "『有』そのものを確認しました。"
+                )
         }
     )
 
@@ -1930,51 +2357,121 @@ def page2_results(data):
         "school_type"
     ]
 
-    if school["uncertain"]:
 
-        status = "uncertain"
-        observed = "判定不能"
-        reason = "公・国・私の○を確実に判定できません。"
+    if school[
+        "uncertain"
+    ]:
+
+        school_status = (
+            "uncertain"
+        )
+
+        observed = (
+            "判定不能"
+        )
+
+        reason = (
+            "公・国・私の○を"
+            "確実に判定できません。"
+        )
+
 
     else:
 
         selected = []
 
-        if school["public_circled"]:
-            selected.append("公")
 
-        if school["national_circled"]:
-            selected.append("国")
+        if school[
+            "public_circled"
+        ]:
+            selected.append(
+                "公"
+            )
 
-        if school["private_circled"]:
-            selected.append("私")
+
+        if school[
+            "national_circled"
+        ]:
+            selected.append(
+                "国"
+            )
 
 
-        if len(selected) == 1:
+        if school[
+            "private_circled"
+        ]:
+            selected.append(
+                "私"
+            )
 
-            status = "ok"
-            observed = selected[0]
-            reason = "公・国・私のうち1つに○があります。"
 
-        elif len(selected) == 0:
+        if len(
+            selected
+        ) == 1:
 
-            status = "missing"
-            observed = "○なし"
-            reason = "公・国・私のいずれにも○がありません。"
+            school_status = (
+                "ok"
+            )
+
+            observed = (
+                selected[0]
+            )
+
+            reason = (
+                "公・国・私のうち"
+                "1つに○があります。"
+            )
+
+
+        elif len(
+            selected
+        ) == 0:
+
+            school_status = (
+                "missing"
+            )
+
+            observed = (
+                "○なし"
+            )
+
+            reason = (
+                "公・国・私のいずれにも"
+                "○がありません。"
+            )
+
 
         else:
 
-            status = "warning"
-            observed = "・".join(selected)
-            reason = "公・国・私に複数の○があります。"
+            school_status = (
+                "warning"
+            )
+
+            observed = (
+                "・".join(
+                    selected
+                )
+            )
+
+            reason = (
+                "公・国・私に"
+                "複数の○があります。"
+            )
 
 
     results.append(
         {
-            "name": "公・国・私",
-            "status": status,
-            "observed_value": observed,
-            "reason": reason
+            "name":
+                "公・国・私",
+
+            "status":
+                school_status,
+
+            "observed_value":
+                observed,
+
+            "reason":
+                reason
         }
     )
 
@@ -1991,84 +2488,68 @@ def page2_results(data):
         course[
             "written_text"
         ]
-        .replace(" ", "")
-        .replace("　", "")
+        .replace(
+            " ",
+            ""
+        )
+        .replace(
+            "　",
+            ""
+        )
     )
 
-    week_ok = (
-        "週1" in text
-        or "週１" in text
+
+    course_ok = (
+        course[
+            "has_handwriting"
+        ]
+        and
+        (
+            "週1"
+            in text
+            or
+            "週１"
+            in text
+        )
+        and
+        (
+            "90分"
+            in text
+            or
+            "９０分"
+            in text
+        )
     )
 
-    minute_ok = (
-        "90分" in text
-        or "９０分" in text
-    )
-
-    ok = (
-        course["has_handwriting"]
-        and week_ok
-        and minute_ok
-    )
 
     results.append(
         {
-            "name": "コース名",
-            "status": "ok" if ok else "missing",
-            "observed_value": course["written_text"],
-            "reason": (
-                "コース名欄に「週1 90分」の記載があります。"
-                if ok
-                else "コース名欄に「週1 90分」の記載がありません。"
-            )
-        }
-    )
+            "name":
+                "コース名",
 
+            "status":
+                (
+                    "ok"
+                    if course_ok
+                    else "missing"
+                ),
 
-    # -----------------------------------------------------
-    # 初回指導日
-    # -----------------------------------------------------
+            "observed_value":
+                (
+                    course[
+                        "written_text"
+                    ]
+                    if course[
+                        "written_text"
+                    ]
+                    else "空欄"
+                ),
 
-    ok = data[
-        "initial_instruction_date"
-    ][
-        "has_handwriting"
-    ]
-
-    results.append(
-        {
-            "name": "初回指導日",
-            "status": "ok" if ok else "missing",
-            "observed_value": "記入あり" if ok else "空欄",
-            "reason": (
-                "初回指導日を確認しました。"
-                if ok
-                else "初回指導日が空欄です。"
-            )
-        }
-    )
-
-
-    # -----------------------------------------------------
-    # 役務提供期間A
-    # -----------------------------------------------------
-
-    ok = data[
-        "service_period_a"
-    ][
-        "has_handwriting"
-    ]
-
-    results.append(
-        {
-            "name": "役務提供期間A",
-            "status": "ok" if ok else "missing",
-            "observed_value": "記入あり" if ok else "空欄",
-            "reason": (
-                "役務提供期間Aを確認しました。"
-                if ok
-                else "役務提供期間Aが空欄です。"
-            )
+            "reason":
+                (
+                    "コース名欄に"
+                    "『週1 90分』があるか確認しました。"
+                )
         }
     )
 
@@ -2086,10 +2567,12 @@ def page2_results(data):
     row_results = []
 
     has_missing = False
+
     has_warning = False
+
     has_uncertain = False
 
-    checked_rows = 0
+    checked = 0
 
 
     for row in rows:
@@ -2101,43 +2584,51 @@ def page2_results(data):
         if not values:
             continue
 
-        checked_rows += 1
 
-        label = (
-            row["row_label"].strip()
-            or f"{checked_rows}行目"
-        )
+        checked += 1
 
-        expected_quantity = sum(
+
+        expected_q = sum(
             values
         )
 
-        written_text = row[
+
+        label = (
+            row[
+                "row_label"
+            ].strip()
+            or
+            f"{checked}行目"
+        )
+
+
+        text_q = row[
             "written_quantity"
         ].strip()
 
-        written_number = None
 
-        if written_text:
+        match = re.search(
+            r"\d+",
+            text_q
+        )
 
-            match = re.search(
-                r"\d+",
-                written_text
+
+        written_q = (
+            int(
+                match.group()
             )
-
-            if match:
-                written_number = int(
-                    match.group()
-                )
+            if match
+            else None
+        )
 
 
-        calculation = (
+        calc = (
             " + ".join(
                 str(v)
                 for v in values
             )
             +
-            f" = {expected_quantity}"
+            f" = {expected_q}"
         )
 
 
@@ -2148,68 +2639,136 @@ def page2_results(data):
             has_missing = True
 
             row_results.append(
-                f"{label}：{calculation}"
+                f"{label}："
+                f"{calc}"
                 " / 数量欄：空欄"
             )
 
-        elif written_number is None:
+
+        elif written_q is None:
 
             has_uncertain = True
 
             row_results.append(
-                f"{label}：{calculation}"
+                f"{label}："
+                f"{calc}"
                 " / 数量欄：読取不能"
             )
 
-        elif written_number != expected_quantity:
+
+        elif written_q >= 1000:
+
+            has_uncertain = True
+
+            row_results.append(
+                f"{label}："
+                f"{calc}"
+                f" / 数量欄：{written_q}"
+                "（金額誤読の可能性）"
+            )
+
+
+        elif written_q != expected_q:
 
             has_warning = True
 
             row_results.append(
-                f"{label}：{calculation}"
-                f" / 数量欄：{written_number}"
+                f"{label}："
+                f"{calc}"
+                f" / 数量欄：{written_q}"
             )
+
 
         else:
 
             row_results.append(
-                f"{label}：{calculation}"
-                f" / 数量欄：{written_number}"
+                f"{label}："
+                f"{calc}"
+                f" / 数量欄：{written_q}"
             )
 
 
     if has_missing:
 
-        status = "missing"
-        reason = "横方向の数字合計に対して数量欄が空欄の行があります。"
+        q_status = (
+            "missing"
+        )
+
+        q_reason = (
+            "数量欄が空欄の"
+            "行があります。"
+        )
+
 
     elif has_warning:
 
-        status = "warning"
-        reason = "横方向の数字合計と数量欄が一致しない行があります。"
+        q_status = (
+            "warning"
+        )
+
+        q_reason = (
+            "横方向の合計と"
+            "数量欄が一致しない"
+            "行があります。"
+        )
+
 
     elif has_uncertain:
 
-        status = "uncertain"
-        reason = "数量欄を確実に読み取れない行があります。"
+        q_status = (
+            "uncertain"
+        )
 
-    elif checked_rows > 0:
+        q_reason = (
+            "数量欄を確実に"
+            "読み取れない行があります。"
+        )
 
-        status = "ok"
-        reason = "各行の合計と数量欄が一致しています。"
+
+    elif checked > 0:
+
+        q_status = (
+            "ok"
+        )
+
+        q_reason = (
+            "各行の合計と"
+            "数量欄が一致しています。"
+        )
+
 
     else:
 
-        status = "uncertain"
-        reason = "数量判定対象の行を確認できませんでした。"
+        q_status = (
+            "uncertain"
+        )
+
+        q_reason = (
+            "数量判定対象の行を"
+            "確認できませんでした。"
+        )
 
 
     results.append(
         {
-            "name": "数量",
-            "status": status,
-            "observed_value": " / ".join(row_results),
-            "reason": reason
+            "name":
+                "数量",
+
+            "status":
+                q_status,
+
+            "observed_value":
+                (
+                    " / ".join(
+                        row_results
+                    )
+                    if row_results
+                    else
+                    "対象行を確認できず"
+                ),
+
+            "reason":
+                q_reason
         }
     )
 
@@ -2222,25 +2781,36 @@ def page2_results(data):
         "receipt_signature"
     ]
 
-    ok = sign[
-        "has_handwriting"
-    ]
 
     results.append(
         {
-            "name": "受領サイン",
-            "status": "ok" if ok else "missing",
-            "observed_value": (
-                "記入あり"
-                if ok
-                else "空欄"
-            ),
-            "reason": (
-                "右上の「受領サイン →」直後の欄に記入があります。"
-                if ok
-                else
-                "右上の「受領サイン →」直後の欄が空欄です。"
-            )
+            "name":
+                "受領サイン",
+
+            "status":
+                (
+                    "ok"
+                    if sign[
+                        "has_handwriting"
+                    ]
+                    else "missing"
+                ),
+
+            "observed_value":
+                (
+                    "記入あり"
+                    if sign[
+                        "has_handwriting"
+                    ]
+                    else "空欄"
+                ),
+
+            "reason":
+                (
+                    "右上の"
+                    "『受領サイン →』"
+                    "直後の欄だけを確認しました。"
+                )
         }
     )
 
@@ -2254,34 +2824,50 @@ def page2_results(data):
 
 def display_item(item):
 
-    status = item[
-        "status"
-    ]
+    mapping = {
 
-    if status == "ok":
+        "ok":
+            (
+                "✅",
+                "問題なし"
+            ),
 
-        icon = "✅"
-        label = "問題なし"
+        "missing":
+            (
+                "❌",
+                "記入漏れ"
+            ),
 
-    elif status == "missing":
+        "warning":
+            (
+                "⚠️",
+                "要注意"
+            ),
 
-        icon = "❌"
-        label = "記入漏れ"
+        "not_applicable":
+            (
+                "➖",
+                "対象外"
+            ),
 
-    elif status == "warning":
+        "uncertain":
+            (
+                "🔍",
+                "要確認"
+            )
 
-        icon = "⚠️"
-        label = "要注意"
+    }
 
-    elif status == "not_applicable":
 
-        icon = "➖"
-        label = "対象外"
-
-    else:
-
-        icon = "🔍"
-        label = "要確認"
+    icon, label = mapping.get(
+        item[
+            "status"
+        ],
+        (
+            "🔍",
+            "要確認"
+        )
+    )
 
 
     with st.container(
@@ -2290,8 +2876,10 @@ def display_item(item):
 
         st.markdown(
             f"### {icon} "
-            f"{item['name']}：{label}"
+            f"{item['name']}："
+            f"{label}"
         )
+
 
         if item.get(
             "observed_value"
@@ -2302,6 +2890,7 @@ def display_item(item):
                 f"**{item['observed_value']}**"
             )
 
+
         st.caption(
             item.get(
                 "reason",
@@ -2311,7 +2900,7 @@ def display_item(item):
 
 
 # =========================================================
-# アップロード
+# ファイル選択
 # =========================================================
 
 st.divider()
@@ -2321,12 +2910,8 @@ st.markdown(
 )
 
 
-st.markdown(
-    "### ① クレジット申込書"
-)
-
 file1 = st.file_uploader(
-    "1枚目の写真を選択",
+    "① クレジット申込書",
     type=[
         "jpg",
         "jpeg",
@@ -2336,12 +2921,8 @@ file1 = st.file_uploader(
 )
 
 
-st.markdown(
-    "### ② 役務申込書・指導内容"
-)
-
 file2 = st.file_uploader(
-    "2枚目の写真を選択",
+    "② 役務申込書・指導内容",
     type=[
         "jpg",
         "jpeg",
@@ -2352,8 +2933,9 @@ file2 = st.file_uploader(
 
 
 st.caption(
-    "書類全体が入るように、"
-    "できるだけ真上から撮影してください。"
+    "写真は1枚のままでOKです。"
+    "アプリ側で自動的に上下分割・"
+    "重要箇所の拡大を行います。"
 )
 
 
@@ -2373,12 +2955,15 @@ if st.button(
             "写真を1枚以上選択してください。"
         )
 
+
     else:
 
         try:
 
             total_missing = 0
+
             total_warning = 0
+
             total_uncertain = 0
 
 
@@ -2392,16 +2977,22 @@ if st.button(
                     file1
                 )
 
+
                 with st.spinner(
-                    "1枚目を確認しています…"
+                    "1枚目を自動分割・"
+                    "拡大して確認しています…"
                 ):
 
-                    data1 = strict_read_page1(
-                        img1
+                    data1 = (
+                        strict_read_page1(
+                            img1
+                        )
                     )
 
-                    results1 = page1_results(
-                        data1
+                    results1 = (
+                        page1_results(
+                            data1
+                        )
                     )
 
 
@@ -2410,6 +3001,7 @@ if st.button(
                 st.subheader(
                     "① クレジット申込書"
                 )
+
 
                 st.image(
                     img1,
@@ -2423,13 +3015,34 @@ if st.button(
                         item
                     )
 
-                    if item["status"] == "missing":
+
+                    if (
+                        item[
+                            "status"
+                        ]
+                        == "missing"
+                    ):
+
                         total_missing += 1
 
-                    elif item["status"] == "warning":
+
+                    elif (
+                        item[
+                            "status"
+                        ]
+                        == "warning"
+                    ):
+
                         total_warning += 1
 
-                    elif item["status"] == "uncertain":
+
+                    elif (
+                        item[
+                            "status"
+                        ]
+                        == "uncertain"
+                    ):
+
                         total_uncertain += 1
 
 
@@ -2443,16 +3056,22 @@ if st.button(
                     file2
                 )
 
+
                 with st.spinner(
-                    "2枚目を確認しています…"
+                    "2枚目を自動分割・"
+                    "拡大して確認しています…"
                 ):
 
-                    data2 = strict_read_page2(
-                        img2
+                    data2 = (
+                        strict_read_page2(
+                            img2
+                        )
                     )
 
-                    results2 = page2_results(
-                        data2
+                    results2 = (
+                        page2_results(
+                            data2
+                        )
                     )
 
 
@@ -2461,6 +3080,7 @@ if st.button(
                 st.subheader(
                     "② 役務申込書・指導内容"
                 )
+
 
                 st.image(
                     img2,
@@ -2474,18 +3094,39 @@ if st.button(
                         item
                     )
 
-                    if item["status"] == "missing":
+
+                    if (
+                        item[
+                            "status"
+                        ]
+                        == "missing"
+                    ):
+
                         total_missing += 1
 
-                    elif item["status"] == "warning":
+
+                    elif (
+                        item[
+                            "status"
+                        ]
+                        == "warning"
+                    ):
+
                         total_warning += 1
 
-                    elif item["status"] == "uncertain":
+
+                    elif (
+                        item[
+                            "status"
+                        ]
+                        == "uncertain"
+                    ):
+
                         total_uncertain += 1
 
 
             # =================================================
-            # 結果まとめ
+            # まとめ
             # =================================================
 
             st.divider()
@@ -2508,31 +3149,36 @@ if st.button(
                     "問題は見つかりませんでした。"
                 )
 
+
             else:
 
-                if total_missing > 0:
+                if total_missing:
 
                     st.error(
                         f"❌ 記入漏れ："
                         f"{total_missing}件"
                     )
 
-                if total_warning > 0:
+
+                if total_warning:
 
                     st.warning(
                         f"⚠️ 要注意："
                         f"{total_warning}件"
                     )
 
-                if total_uncertain > 0:
+
+                if total_uncertain:
 
                     st.warning(
                         f"🔍 要確認："
                         f"{total_uncertain}件"
                     )
 
+
                 st.info(
-                    "該当箇所を人の目でも確認してください。"
+                    "該当箇所を人の目でも"
+                    "確認してください。"
                 )
 
 

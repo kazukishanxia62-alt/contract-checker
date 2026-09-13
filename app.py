@@ -20,13 +20,12 @@ st.set_page_config(
 st.title("契約書 AI記入漏れチェック")
 
 st.caption(
-    "全体写真・分割写真・アップ写真のどれでも使用できます。"
-    "AIが写真内の印刷見出しから、書類のどの部分かを判断します。"
+    "全体写真でも、分割したアップ写真でも使えます。"
+    "写真ごとに書類の場所を特定してから、その場所専用の判定を行います。"
 )
 
 st.warning(
-    "提出前の補助チェック用です。"
-    "最終確認は必ず人が行ってください。"
+    "提出前の補助チェック用です。最終確認は必ず人が行ってください。"
 )
 
 
@@ -55,18 +54,38 @@ PREFECTURES = [
 ]
 
 
+PAGE1_GROUPS = [
+    "applicant",
+    "employment",
+    "household",
+    "relation_top",
+    "relation_bottom",
+    "bank",
+    "contract_bottom"
+]
+
+
+PAGE2_GROUPS = [
+    "guardian_address",
+    "target_school",
+    "course_dates",
+    "quantity",
+    "receipt"
+]
+
+
 # =========================================================
-# 画像処理
+# 画像
 # =========================================================
 
-def pil_to_data_url(img):
+def pil_to_data_url(img, quality=95):
 
     buf = BytesIO()
 
     img.save(
         buf,
         format="JPEG",
-        quality=95
+        quality=quality
     )
 
     encoded = base64.b64encode(
@@ -84,16 +103,16 @@ def prepare_basic_image(uploaded):
         img
     ).convert("RGB")
 
-    max_side = 3000
+    max_side = 3200
 
     if max(img.size) > max_side:
 
-        ratio = max_side / max(img.size)
+        scale = max_side / max(img.size)
 
         img = img.resize(
             (
-                int(img.width * ratio),
-                int(img.height * ratio)
+                int(img.width * scale),
+                int(img.height * scale)
             ),
             Image.Resampling.LANCZOS
         )
@@ -109,31 +128,18 @@ def orientation_schema():
 
     return {
         "type": "json_schema",
-
         "json_schema": {
             "name": "orientation",
-
             "strict": True,
-
             "schema": {
                 "type": "object",
-
                 "properties": {
                     "rotation": {
                         "type": "integer",
-                        "enum": [
-                            0,
-                            90,
-                            180,
-                            270
-                        ]
+                        "enum": [0, 90, 180, 270]
                     }
                 },
-
-                "required": [
-                    "rotation"
-                ],
-
+                "required": ["rotation"],
                 "additionalProperties": False
             }
         }
@@ -144,16 +150,14 @@ def detect_orientation(img):
 
     preview = img.copy()
 
-    max_side = 1000
+    if max(preview.size) > 1000:
 
-    if max(preview.size) > max_side:
-
-        ratio = max_side / max(preview.size)
+        scale = 1000 / max(preview.size)
 
         preview = preview.resize(
             (
-                int(preview.width * ratio),
-                int(preview.height * ratio)
+                int(preview.width * scale),
+                int(preview.height * scale)
             ),
             Image.Resampling.LANCZOS
         )
@@ -161,18 +165,9 @@ def detect_orientation(img):
 
     versions = {
         0: preview,
-        90: preview.rotate(
-            90,
-            expand=True
-        ),
-        180: preview.rotate(
-            180,
-            expand=True
-        ),
-        270: preview.rotate(
-            270,
-            expand=True
-        )
+        90: preview.rotate(90, expand=True),
+        180: preview.rotate(180, expand=True),
+        270: preview.rotate(270, expand=True)
     }
 
 
@@ -180,16 +175,19 @@ def detect_orientation(img):
         {
             "type": "text",
             "text": """
-同じ日本語契約書または契約書の一部分を
+同じ日本語の契約書、または契約書の一部分を、
 0度・90度・180度・270度に回転した画像です。
 
-日本語の印刷文字が通常通り読める向きを選んでください。
+日本語の印刷文字が普通に読める向きを1つ選んでください。
 
-写真が契約書全体ではなく、
-一部分だけでも構いません。
+契約書全体ではなく、
+一部分だけが写っている場合もあります。
 
-内容のチェックは不要です。
-文字が正しい方向になる回転角度だけ返してください。
+記入内容は判定しません。
+
+rotation は必ず
+0 / 90 / 180 / 270
+のどれかです。
 """
         }
     ]
@@ -197,43 +195,38 @@ def detect_orientation(img):
 
     for angle, version in versions.items():
 
-        content.append(
-            {
-                "type": "text",
-                "text": f"【{angle}度版】"
-            }
-        )
+        content.append({
+            "type": "text",
+            "text": f"【{angle}度版】"
+        })
 
-        content.append(
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url": pil_to_data_url(version),
-                    "detail": "low"
-                }
+        content.append({
+            "type": "image_url",
+            "image_url": {
+                "url": pil_to_data_url(
+                    version,
+                    quality=80
+                ),
+                "detail": "low"
             }
-        )
+        })
 
 
     response = client.chat.completions.create(
         model=MODEL,
-
         messages=[
             {
                 "role": "user",
                 "content": content
             }
         ],
-
         response_format=orientation_schema()
     )
 
 
-    data = json.loads(
+    return json.loads(
         response.choices[0].message.content
-    )
-
-    return data["rotation"]
+    )["rotation"]
 
 
 def prepare_image(uploaded):
@@ -257,169 +250,293 @@ def prepare_image(uploaded):
 
 
 # =========================================================
-# 共通AI出力Schema
+# 画像がどの部分か判定
 # =========================================================
 
-def extraction_schema():
+def region_schema(page):
+
+    allowed = (
+        PAGE1_GROUPS + ["full_document", "unknown"]
+        if page == 1
+        else
+        PAGE2_GROUPS + ["full_document", "unknown"]
+    )
 
     return {
         "type": "json_schema",
-
         "json_schema": {
-            "name": "contract_extraction",
-
+            "name": f"page{page}_region",
             "strict": True,
-
             "schema": {
                 "type": "object",
-
                 "properties": {
-
-                    "detected_regions": {
+                    "regions": {
                         "type": "array",
-
                         "items": {
-                            "type": "object",
-
-                            "properties": {
-                                "image_index": {
-                                    "type": "integer"
-                                },
-
-                                "region": {
-                                    "type": "string"
-                                },
-
-                                "description": {
-                                    "type": "string"
-                                }
-                            },
-
-                            "required": [
-                                "image_index",
-                                "region",
-                                "description"
-                            ],
-
-                            "additionalProperties": False
+                            "type": "string",
+                            "enum": allowed
                         }
                     },
-
-
-                    "fields": {
-                        "type": "array",
-
-                        "items": {
-                            "type": "object",
-
-                            "properties": {
-
-                                "key": {
-                                    "type": "string"
-                                },
-
-                                "visible": {
-                                    "type": "boolean"
-                                },
-
-                                "has_entry": {
-                                    "type": "boolean"
-                                },
-
-                                "selected": {
-                                    "type": "boolean"
-                                },
-
-                                "text": {
-                                    "type": "string"
-                                },
-
-                                "uncertain": {
-                                    "type": "boolean"
-                                }
-                            },
-
-                            "required": [
-                                "key",
-                                "visible",
-                                "has_entry",
-                                "selected",
-                                "text",
-                                "uncertain"
-                            ],
-
-                            "additionalProperties": False
-                        }
-                    },
-
-
-                    "quantity_rows": {
-                        "type": "array",
-
-                        "items": {
-                            "type": "object",
-
-                            "properties": {
-                                "row_label": {
-                                    "type": "string"
-                                },
-
-                                "horizontal_values": {
-                                    "type": "array",
-
-                                    "items": {
-                                        "type": "integer"
-                                    }
-                                },
-
-                                "quantity_visible": {
-                                    "type": "boolean"
-                                },
-
-                                "quantity_has_entry": {
-                                    "type": "boolean"
-                                },
-
-                                "written_quantity": {
-                                    "type": "string"
-                                },
-
-                                "uncertain": {
-                                    "type": "boolean"
-                                }
-                            },
-
-                            "required": [
-                                "row_label",
-                                "horizontal_values",
-                                "quantity_visible",
-                                "quantity_has_entry",
-                                "written_quantity",
-                                "uncertain"
-                            ],
-
-                            "additionalProperties": False
-                        }
+                    "reason": {
+                        "type": "string"
                     }
                 },
-
                 "required": [
-                    "detected_regions",
-                    "fields",
-                    "quantity_rows"
+                    "regions",
+                    "reason"
                 ],
-
                 "additionalProperties": False
             }
         }
     }
 
 
+def classify_page1_image(img):
+
+    prompt = """
+これは「① クレジット申込書」の写真です。
+
+書類全体の場合もあれば、
+書類の一部分だけを近くから撮った写真の場合もあります。
+
+写真の位置ではなく、
+必ず印刷された見出し・項目名を見て判断してください。
+
+該当する領域をすべて返してください。
+
+applicant
+= ご契約者氏名、ご住所、フリガナなど契約者本人情報
+
+employment
+= 勤務先、会社名、雇用形態、派遣先・出向先など
+
+household
+= 世帯主、世帯状況、世帯主年収、
+  世帯主のクレジットの月あたりのお支払額など
+
+relation_top
+= 関係者情報の上側。
+  氏名、フリガナ、性別、生年月日、
+  ご契約者との関係、ご住所、ご住居、
+  電話番号、携帯電話、税込年収など
+
+relation_bottom
+= 関係者情報の勤務先側。
+  雇用形態、勤務年数、給料日、
+  会社名、所在地、所在地郵便番号、
+  所在地電話番号など
+
+bank
+= ゆうちょ銀行、ゆうちょ銀行以外、
+  口座名義人フリガナなど銀行口座部分
+
+contract_bottom
+= 役務提供期間、
+  特定商取引法第42条第2項又は第3項書面の受領年月日、
+  ヶ月など契約下部の項目
+
+full_document
+= 書類全体が十分に写っている
+
+unknown
+= 見出しが少なすぎて判断できない
+
+
+重要：
+
+1枚の写真に複数領域が写っていれば、
+複数返して構いません。
+
+例えば関係者情報の上から下まで写っていれば
+
+["relation_top", "relation_bottom"]
+
+としてください。
+
+full_document の場合は、
+full_document だけ返してください。
+"""
+
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": prompt
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": pil_to_data_url(img),
+                            "detail": "high"
+                        }
+                    }
+                ]
+            }
+        ],
+        response_format=region_schema(1)
+    )
+
+    return json.loads(
+        response.choices[0].message.content
+    )
+
+
+def classify_page2_image(img):
+
+    prompt = """
+これは「② 役務申込書・指導内容」の写真です。
+
+書類全体の場合もあれば、
+一部分だけを近くから撮った写真の場合もあります。
+
+写真の位置ではなく、
+印刷された見出しから判断してください。
+
+guardian_address
+= 保護者氏名、氏名フリガナ、
+  ご住所・連絡先、都・道・府・県など
+
+target_school
+= 指導対象Aの「有」、
+  公・国・私など学校情報
+
+course_dates
+= コース名、初回指導日、
+  役務提供期間Aなど
+
+quantity
+= 商品表、数量、各単価、小計などがある部分
+
+receipt
+= 右上の書面交付日、
+  「受領サイン →」の部分
+
+full_document
+= 書類全体が十分写っている
+
+unknown
+= 判定できない
+
+
+1枚の写真に複数領域が写っていれば
+複数返してください。
+
+full_document の場合は
+full_document のみ返してください。
+"""
+
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": prompt
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": pil_to_data_url(img),
+                            "detail": "high"
+                        }
+                    }
+                ]
+            }
+        ],
+        response_format=region_schema(2)
+    )
+
+    return json.loads(
+        response.choices[0].message.content
+    )
+
+
 # =========================================================
-# AIに複数画像を送る
+# 汎用フィールドSchema
 # =========================================================
 
-def send_images_to_ai(images, prompt):
+def field_object_schema():
+
+    return {
+        "type": "object",
+        "properties": {
+            "visible": {
+                "type": "boolean"
+            },
+            "has_entry": {
+                "type": "boolean"
+            },
+            "selected": {
+                "type": "boolean"
+            },
+            "text": {
+                "type": "string"
+            },
+            "uncertain": {
+                "type": "boolean"
+            }
+        },
+        "required": [
+            "visible",
+            "has_entry",
+            "selected",
+            "text",
+            "uncertain"
+        ],
+        "additionalProperties": False
+    }
+
+
+def fields_schema(name, keys):
+
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": name,
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    key: field_object_schema()
+                    for key in keys
+                },
+                "required": keys,
+                "additionalProperties": False
+            }
+        }
+    }
+
+
+def blank_field():
+
+    return {
+        "visible": False,
+        "has_entry": False,
+        "selected": False,
+        "text": "",
+        "uncertain": False
+    }
+
+
+# =========================================================
+# 専用領域の読取
+# =========================================================
+
+def read_field_group(images, prompt, keys, schema_name):
+
+    if not images:
+
+        return {
+            key: blank_field()
+            for key in keys
+        }
+
 
     content = [
         {
@@ -429,44 +546,37 @@ def send_images_to_ai(images, prompt):
     ]
 
 
-    for index, img in enumerate(
+    for i, img in enumerate(
         images,
         start=1
     ):
 
-        content.append(
-            {
-                "type": "text",
-                "text": (
-                    f"【画像{index}】\n"
-                    "この画像が書類のどの部分なのかも、"
-                    "印刷されている項目名から判定してください。"
-                )
-            }
-        )
+        content.append({
+            "type": "text",
+            "text": f"【この領域の参考画像{i}】"
+        })
 
-        content.append(
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url": pil_to_data_url(img),
-                    "detail": "high"
-                }
+        content.append({
+            "type": "image_url",
+            "image_url": {
+                "url": pil_to_data_url(img),
+                "detail": "high"
             }
-        )
+        })
 
 
     response = client.chat.completions.create(
         model=MODEL,
-
         messages=[
             {
                 "role": "user",
                 "content": content
             }
         ],
-
-        response_format=extraction_schema()
+        response_format=fields_schema(
+            schema_name,
+            keys
+        )
     )
 
 
@@ -476,724 +586,1088 @@ def send_images_to_ai(images, prompt):
 
 
 # =========================================================
-# 1枚目プロンプト
+# 1枚目：契約者
 # =========================================================
 
-PAGE1_PROMPT = """
-あなたは日本語のクレジット申込書を確認する担当です。
+def read_page1_applicant(images):
 
-複数の画像が送られます。
+    keys = [
+        "applicant_name",
+        "applicant_name_furigana",
+        "applicant_address",
+        "applicant_prefecture",
+        "applicant_address_furigana"
+    ]
 
-画像は、
+    prompt = """
+①クレジット申込書の
+「ご契約者本人情報」だけを確認してください。
 
-・書類全体
-・上半分
-・下半分
-・左上
-・右上
-・左下
-・右下
-・特定欄のアップ
+他の欄は一切判定しません。
 
-など、どの撮り方でも構いません。
+同じ部分を複数枚撮影している場合があります。
+より近く、より鮮明に写っている画像を優先してください。
 
-同じ書類を複数枚に分けて撮影している場合があります。
+共通ルール：
 
+visible:
+その指定欄自体を画像上で確認できるか。
 
-==================================================
-最初に画像の場所を特定
-==================================================
+has_entry:
+指定欄そのものに手書き・入力があるか。
 
-各画像について、
-印刷されている見出しや項目名から、
+selected:
+このグループでは使用しないので false。
 
-・契約者情報
-・勤務先
-・雇用形態
-・世帯状況
-・関係者情報
-・銀行口座
-・契約情報
-・その他
+uncertain:
+指定欄は見えるが、手書きかどうか等を
+本当に判定できない場合だけ true。
 
-など、どの部分かを判断してください。
-
-写真が一部分だけでも、
-見出しから判断してください。
-
-位置だけで判断してはいけません。
-
-「左上にあるから契約者情報」
-のような推測は禁止です。
+「写っていない」と「判定不能」を混同しない。
 
 
-==================================================
-最重要ルール
-==================================================
+applicant_name
+= ご契約者の氏名欄。
 
-1.
-指定欄が画像に写っていない場合、
+applicant_name_furigana
+= 氏名に対応するフリガナ欄。
 
-visible=false
+applicant_address
+= ご契約者本人のご住所欄。
+
+applicant_prefecture
+= 上記住所に実際に書かれている都道府県名。
+
+兵庫県神戸市～
+なら text="兵庫県"
+
+神戸市～
+だけなら text=""
+
+市区町村から県名を推測しない。
+
+applicant_address_furigana
+= ご契約者住所に対応する住所用フリガナ欄。
+
+氏名フリガナを代用禁止。
+"""
+
+    return read_field_group(
+        images,
+        prompt,
+        keys,
+        "page1_applicant"
+    )
+
+
+# =========================================================
+# 1枚目：雇用形態
+# =========================================================
+
+def read_page1_employment(images):
+
+    keys = [
+        "employment_regular",
+        "employment_dispatch",
+        "employment_contract",
+        "employment_parttime",
+        "employment_other",
+        "dispatch_company"
+    ]
+
+    prompt = """
+①クレジット申込書の
+勤務先・雇用形態部分だけを確認してください。
+
+employment_regular
+= 正社員
+
+employment_dispatch
+= 派遣社員
+
+employment_contract
+= 契約社員
+
+employment_parttime
+= パート・アルバイト
+
+employment_other
+= その他
+
+
+これら5項目は、
+
+対象となる印刷文字に
+実際の手書き○・囲み・選択印がある場合だけ
+
+selected=true
 
 にしてください。
 
-写っていない項目を
-「空欄」と判断してはいけません。
+印刷された丸、
+枠線、
+文字の形、
+
+だけで selected=true にしないでください。
+
+選択肢そのものが見えていれば visible=true。
 
 
-2.
-指定欄自体が見えていて、
-その欄に手書きがない場合だけ
+dispatch_company
+= 「派遣先・出向先」の会社名欄そのもの。
+
+他の会社名や勤務先会社名を
+派遣先として流用しない。
+
+明確に空欄なら
+
+visible=true
+has_entry=false
+uncertain=false
+
+です。
+
+見えるのに何でも uncertain に逃げないでください。
+"""
+
+    return read_field_group(
+        images,
+        prompt,
+        keys,
+        "page1_employment"
+    )
+
+
+# =========================================================
+# 1枚目：世帯状況
+# =========================================================
+
+def read_page1_household(images):
+
+    keys = [
+        "household_credit_monthly"
+    ]
+
+    prompt = """
+①クレジット申込書の世帯状況部分です。
+
+確認するのは1項目だけです。
+
+household_credit_monthly
+
+必ず、
+
+「世帯主のクレジットの月あたりのお支払額」
+
+と印刷された欄そのものを探してください。
+
+近くにある
+
+・世帯主の年収(税込)
+・税込年収
+・400万円
+・その他の金額
+
+を絶対に流用しないでください。
+
+
+対象欄が見えていて空欄なら
+
+visible=true
+has_entry=false
+text=""
+uncertain=false
+
+
+数字が記入されていて読めるなら
+
+has_entry=true
+
+text に、その欄の金額だけ入れてください。
+
+
+欄が見えていて、
+本当に数字が潰れて読めない場合だけ
+
+uncertain=true。
+"""
+
+    return read_field_group(
+        images,
+        prompt,
+        keys,
+        "page1_household"
+    )
+
+
+# =========================================================
+# 1枚目：関係者上側
+# =========================================================
+
+def read_page1_relation_top(images):
+
+    keys = [
+        "relation_name",
+        "relation_name_furigana",
+        "relation_sex",
+        "relation_birthdate",
+        "relation_relationship",
+        "relation_address",
+        "relation_address_same",
+        "relation_address_postal",
+        "relation_residence",
+        "relation_home_phone",
+        "relation_mobile",
+        "relation_income"
+    ]
+
+    prompt = """
+①クレジット申込書の
+「関係者情報」の上側だけを確認してください。
+
+他の欄は使わないでください。
+
+relation_name
+= 関係者本人の氏名。
+
+relation_name_furigana
+= その氏名に対応するフリガナ。
+
+relation_sex
+= 性別の必要な選択。
+○がある場合 selected=true。
+
+relation_birthdate
+= 生年月日。
+
+relation_relationship
+= ご契約者との関係。
+必要な○・選択・記入があれば selected=true。
+
+relation_address
+= 関係者本人の「ご住所」。
+
+relation_address_same
+= 関係者本人住所欄に
+「同上」と明確に書かれている場合のみ
+has_entry=true。
+
+relation_address_postal
+= 関係者本人住所側の郵便番号。
+
+勤務先所在地側の郵便番号を
+流用しない。
+
+relation_residence
+= 「ご住居」の選択。
+必要な○があれば selected=true。
+
+relation_home_phone
+= 関係者本人の固定電話番号。
+
+relation_mobile
+= 関係者本人の携帯電話番号。
+
+relation_income
+= 関係者本人の税込年収。
+
+
+重要：
+
+印刷文字だけでは記入ありにしない。
+
+欄が明確に見えていて空欄なら
+uncertainではなく
 
 visible=true
 has_entry=false
 
 としてください。
 
+○が明確にない場合も
+uncertainではなく selected=false。
+"""
 
-3.
-他の欄の文字を代用しない。
-
-
-4.
-印刷文字は手書き記入として扱わない。
-
-
-5.
-○については、
-対象の文字そのものに
-明確な手書きの○・囲み・選択印がある場合だけ
-
-selected=true。
+    return read_field_group(
+        images,
+        prompt,
+        keys,
+        "page1_relation_top"
+    )
 
 
-6.
-不鮮明なら
+# =========================================================
+# 1枚目：関係者勤務先側
+# =========================================================
 
-uncertain=true。
+def read_page1_relation_bottom(images):
 
+    keys = [
+        "relation_employment",
+        "relation_years_service",
+        "relation_payday",
+        "relation_employer_name",
+        "relation_location",
+        "relation_location_same",
+        "relation_location_postal",
+        "relation_location_phone"
+    ]
 
-==================================================
-必ず返すfield key
-==================================================
+    prompt = """
+①クレジット申込書の
+「関係者情報」の勤務先側だけを確認してください。
 
-以下のkeyをすべて1回ずつ返してください。
-
-
-applicant_name
-applicant_name_furigana
-applicant_address
-applicant_prefecture
-applicant_address_furigana
-
-employment_regular
-employment_dispatch
-employment_contract
-employment_parttime
-employment_other
-dispatch_company
-
-household_credit_monthly
-
-relation_applicable
-relation_name
-relation_name_furigana
-relation_sex
-relation_birthdate
-relation_relationship
-relation_address
-relation_residence
-relation_home_phone
-relation_mobile
-relation_income
 relation_employment
+= 関係者情報内の雇用形態。
+必要な選択に○がある場合 selected=true。
+
 relation_years_service
+= 勤務年数。
+
 relation_payday
+= 給料日。
+
 relation_employer_name
+= 会社名。
+
 relation_location
-relation_location_postal
-relation_location_phone
+= 勤務先等の所在地。
 
-bank_yucho
-bank_other
-bank_account_furigana
-
-page1_service_period
-legal_receipt_date
-payment_months
-
-
-==================================================
-契約者住所
-==================================================
-
-applicant_address：
-
-契約者本人の「ご住所」欄そのもの。
-
-住所が手書きされているか。
-
-
-applicant_prefecture：
-
-住所の中に実際に
-
-北海道
-東京都
-大阪府
-兵庫県
-
-などの都道府県名が書かれているか。
-
-書かれていれば text に
-都道府県名だけ入れてください。
-
-例：
-
-兵庫県神戸市～
-
-なら
-
-text="兵庫県"
-
-
-神戸市～
-
-しかなければ
-
-text=""
-
-
-市区町村から推測してはいけません。
-
-
-applicant_address_furigana：
-
-住所に対応するフリガナ欄そのもの。
-
-氏名フリガナを代用しない。
-
-
-==================================================
-雇用形態
-==================================================
-
-employment_regular
-employment_dispatch
-employment_contract
-employment_parttime
-employment_other
-
-はそれぞれ、
-
-対象文字そのものに
-○があるかだけを見る。
-
-「派遣社員」という印刷文字が見えるだけでは
-selected=trueにしてはいけません。
-
-
-dispatch_company：
-
-派遣先・出向先の会社名欄そのもの。
-
-
-==================================================
-世帯主クレジット月額
-==================================================
-
-household_credit_monthly は必ず
-
-「世帯主のクレジットの月あたりのお支払額」
-
-という欄そのものだけを見る。
-
-近くの
-
-「世帯主の年収(税込)」
-「税込年収」
-
-の数字を絶対に使わない。
-
-金額が読めた場合だけ text に記入する。
-
-
-==================================================
-関係者情報
-==================================================
-
-「関係者情報」と印刷された枠内だけを見る。
-
-
-relation_name：
-関係者本人の氏名欄。
-
-
-relation_name_furigana：
-その氏名に対応するフリガナ。
-
-
-relation_sex：
-性別の必要な○。
-
-
-relation_birthdate：
-生年月日。
-
-
-relation_relationship：
-ご契約者との関係。
-
-
-relation_address：
-「ご住所」欄。
-
-
-relation_residence：
-「ご住居」の選択肢の○。
-
-
-relation_home_phone：
-本人の固定電話。
-
-
-relation_mobile：
-本人の携帯番号。
-
-
-relation_income：
-税込年収。
-
-
-relation_employment：
-関係者側の雇用形態。
-
-
-relation_years_service：
-勤務年数。
-
-
-relation_payday：
-給料日。
-
-
-relation_employer_name：
-会社名。
-
-
-relation_location：
-勤務先等の「所在地」。
-
-実住所または「同上」があれば
+実住所が書かれているなら
 has_entry=true。
 
-「同上」の場合は text="同上"。
+relation_location_same
+= 所在地欄に「同上」と書かれている場合だけ
+has_entry=true。
+
+relation_location_postal
+= 所在地に付属する郵便番号。
+
+relation_location_phone
+= 所在地・勤務先側の電話番号。
 
 
-relation_location_postal：
-所在地に付属する郵便番号。
+本人の携帯電話番号を
+所在地電話番号として使わない。
 
-本人住所側の郵便番号を使わない。
+欄が見えているのに空欄なら、
+要確認ではなく空欄として返してください。
 
+○がない場合も、
+見えているなら selected=false にしてください。
+"""
 
-relation_location_phone：
-所在地・勤務先側の電話番号。
-
-本人携帯を代用しない。
-
-
-==================================================
-銀行口座
-==================================================
-
-bank_yucho：
-ゆうちょ銀行側に記入があるか。
+    return read_field_group(
+        images,
+        prompt,
+        keys,
+        "page1_relation_bottom"
+    )
 
 
-bank_other：
-ゆうちょ銀行以外側に記入があるか。
+# =========================================================
+# 1枚目：銀行口座
+# =========================================================
+
+def read_page1_bank(images):
+
+    keys = [
+        "bank_yucho",
+        "bank_other",
+        "bank_account_furigana"
+    ]
+
+    prompt = """
+①クレジット申込書の銀行口座部分だけを確認してください。
+
+bank_yucho
+= ゆうちょ銀行側に口座情報の記入があるか。
+
+bank_other
+= ゆうちょ銀行以外の銀行側に口座情報の記入があるか。
+
+どちらか片側のみ記入でも問題ありません。
+
+bank_account_furigana
+= 口座名義人に対応するフリガナ欄。
+
+氏名の別フリガナを使わない。
+
+対象欄が見えていて空欄なら、
+uncertainではなく has_entry=false。
+"""
+
+    return read_field_group(
+        images,
+        prompt,
+        keys,
+        "page1_bank"
+    )
 
 
-bank_account_furigana：
-口座名義人フリガナ。
+# =========================================================
+# 1枚目：契約下部
+# =========================================================
 
+def read_page1_contract_bottom(images):
 
-==================================================
-その他
-==================================================
+    keys = [
+        "page1_service_period",
+        "legal_receipt_date",
+        "payment_months"
+    ]
 
-page1_service_period：
+    prompt = """
+①クレジット申込書の契約下部だけ確認してください。
 
-クレジット申込書側の
-「役務提供期間」欄そのもの。
+page1_service_period
+= 「役務提供期間」欄そのもの。
 
-
-legal_receipt_date：
+legal_receipt_date
+= 正確に
 
 「特定商取引法第42条第2項又は第3項書面の受領年月日」
 
-の欄そのもの。
+と書かれた欄そのもの。
 
-別の日付を使わない。
+近くの別の日付を代用禁止。
 
-
-payment_months：
-
-指定された「ヶ月」欄そのもの。
-
-近くの別の数字を使わない。
+年・月・日の記入をこの指定欄で確認してください。
 
 
-quantity_rows は1枚目では空配列 [] にしてください。
-"""
+payment_months
+= 指定された「ヶ月」の欄そのもの。
+
+別の数字を流用しない。
 
 
-# =========================================================
-# 2枚目プロンプト
-# =========================================================
-
-PAGE2_PROMPT = """
-あなたは日本語の
-役務申込書・指導内容の確認担当です。
-
-複数画像が送られます。
-
-書類全体でも、
-4分割画像でも、
-特定箇所だけのアップでも構いません。
-
-
-==================================================
-画像の場所を特定
-==================================================
-
-印刷されている見出しから、
-
-・保護者情報
-・ご住所・連絡先
-・指導対象A
-・公・国・私
-・コース名
-・初回指導日
-・役務提供期間
-・商品表
-・数量
-・受領サイン
-
-など、何の部分かを判断してください。
-
-
-画像の位置だけで判断してはいけません。
-
-
-==================================================
-最重要
-==================================================
-
-項目自体が写っていないなら
-
-visible=false。
-
-
-項目が見えているが空欄なら
-
-visible=true
+欄が見えていて空欄なら
 has_entry=false。
 
+本当に画像が不鮮明な場合だけ uncertain=true。
+"""
 
-別欄から補完禁止。
+    return read_field_group(
+        images,
+        prompt,
+        keys,
+        "page1_contract_bottom"
+    )
 
 
-==================================================
-必ず返すfield key
-==================================================
+# =========================================================
+# 2枚目：保護者・住所
+# =========================================================
 
-以下をすべて1回ずつ返してください。
+def read_page2_guardian(images):
+
+    keys = [
+        "guardian_name",
+        "guardian_furigana",
+        "page2_address",
+        "page2_prefecture",
+        "prefecture_to",
+        "prefecture_do",
+        "prefecture_fu",
+        "prefecture_ken"
+    ]
+
+    prompt = """
+②役務申込書・指導内容の
+保護者氏名・ご住所部分だけ確認してください。
 
 guardian_name
+= 保護者氏名。
+
 guardian_furigana
+= 保護者氏名に対応するフリガナ。
 
 page2_address
+= ご住所・連絡先の住所欄。
+
 page2_prefecture
-prefecture_mark_to
-prefecture_mark_do
-prefecture_mark_fu
-prefecture_mark_ken
+= 住所内に実際に書かれている都道府県名。
+
+大阪府大阪市～
+なら text="大阪府"
+
+大阪市～
+なら text=""
+
+推測禁止。
+
+
+prefecture_to
+= 「都」に○があるか。
+
+prefecture_do
+= 「道」に○があるか。
+
+prefecture_fu
+= 「府」に○があるか。
+
+prefecture_ken
+= 「県」に○があるか。
+
+
+対象文字そのものに手書き○がある場合だけ
+selected=true。
+
+印刷文字・枠線は○ではありません。
+"""
+
+    return read_field_group(
+        images,
+        prompt,
+        keys,
+        "page2_guardian"
+    )
+
+
+# =========================================================
+# 2枚目：指導対象、公国私
+# =========================================================
+
+def read_page2_target_school(images):
+
+    keys = [
+        "target_a_yes",
+        "school_public",
+        "school_national",
+        "school_private"
+    ]
+
+    prompt = """
+②役務申込書・指導内容の
+指導対象A・公国私部分だけ確認してください。
 
 target_a_yes
+= 指導対象Aにある「有」の文字そのもの。
+
+「有」に手書き○がある場合だけ selected=true。
+
 
 school_public
+= 「公」
+
 school_national
+= 「国」
+
 school_private
+= 「私」
+
+
+公・国・私の各文字そのものについて
+○があるかを別々に判定してください。
+
+性別、
+指導対象Aの有、
+学校種別など、
+
+別の○を流用しない。
+
+見えていて○が明確にないなら
+uncertainではなく selected=false。
+"""
+
+    return read_field_group(
+        images,
+        prompt,
+        keys,
+        "page2_target_school"
+    )
+
+
+# =========================================================
+# 2枚目：コース・日付
+# =========================================================
+
+def read_page2_course_dates(images):
+
+    keys = [
+        "course_name",
+        "initial_instruction_date",
+        "service_period_a"
+    ]
+
+    prompt = """
+②役務申込書・指導内容の
+コース名・初回指導日・役務提供期間だけ確認してください。
 
 course_name
+= 「コース名」の指定欄そのもの。
 
-initial_instruction_date
+ここに書かれている文字を text に入れてください。
 
-service_period_a
-
-receipt_signature
-
-
-==================================================
-保護者氏名
-==================================================
-
-guardian_name：
-保護者氏名欄。
-
-
-guardian_furigana：
-その氏名に対応するフリガナ欄。
-
-
-==================================================
-住所
-==================================================
-
-page2_address：
-住所欄そのもの。
-
-
-page2_prefecture：
-
-住所内に実際に都道府県名が書かれている場合だけ
-text に都道府県名を入れる。
-
-市区町村から推測禁止。
-
-
-prefecture_mark_to
-prefecture_mark_do
-prefecture_mark_fu
-prefecture_mark_ken
-
-は、
-
-「都・道・府・県」
-
-の各文字に○があるか。
-
-それぞれselectedで返す。
-
-
-==================================================
-指導対象A
-==================================================
-
-target_a_yes：
-
-指導対象Aの
-
-「有」
-
-という文字そのものに
-○がある場合だけ selected=true。
-
-
-==================================================
-公・国・私
-==================================================
-
-school_public
-school_national
-school_private
-
-について、
-
-公
-国
-私
-
-の各文字そのものに○があるか。
-
-
-==================================================
-コース名
-==================================================
-
-course_name：
-
-「コース名」と印刷された欄そのもの。
+必要なのは「週1 90分」です。
 
 近くの
-
-4回/月
-
-などを使わない。
+「4回/月」
+などはコース名として使わない。
 
 
-==================================================
-初回指導日
-==================================================
-
-initial_instruction_date：
-
-「初回指導日」の欄そのもの。
+initial_instruction_date
+= 「初回指導日」欄そのもの。
 
 
-==================================================
-役務提供期間
-==================================================
+service_period_a
+= 「役務提供期間」のA行だけ。
 
-service_period_a：
-
-役務提供期間のA行だけ。
-
-B行は不要。
+B行は確認不要。
 
 
-==================================================
-受領サイン
-==================================================
+欄が見えていて空欄なら
+has_entry=false。
+"""
 
-receipt_signature：
+    return read_field_group(
+        images,
+        prompt,
+        keys,
+        "page2_course_dates"
+    )
 
-右上にある
+
+# =========================================================
+# 2枚目：受領サイン
+# =========================================================
+
+def read_page2_receipt(images):
+
+    keys = [
+        "receipt_signature"
+    ]
+
+    prompt = """
+②役務申込書・指導内容の
+受領サインだけを確認してください。
+
+写真内でまず
 
 「書面交付日」
 
-の右側の
+を探してください。
+
+その右側付近にある
 
 「受領サイン →」
 
-の直後の横長欄だけを見る。
+という印刷文字を探してください。
+
+確認するのは、
+
+「受領サイン →」の矢印の直後にある
+横長の指定欄だけです。
+
+その指定欄の中に手書きがある場合だけ
+
+receipt_signature.has_entry=true。
 
 
-保護者氏名
-指導対象氏名
-販売担当者氏名
-その他の氏名
+以下は絶対に受領サインとして使わない：
 
-は絶対に受領サインとして使わない。
-
-
-==================================================
-数量
-==================================================
-
-quantity_rows を使用してください。
-
-中央の商品表について、
-記入されている各対象行を別々に返してください。
+・保護者氏名
+・指導対象氏名
+・担当者氏名
+・他の欄の氏名
 
 
-まず印刷された列見出し
+受領サイン欄がはっきり見えていて空欄なら
+
+visible=true
+has_entry=false
+uncertain=false
+
+にしてください。
+"""
+
+    return read_field_group(
+        images,
+        prompt,
+        keys,
+        "page2_receipt"
+    )
+
+
+# =========================================================
+# 数量専用
+# =========================================================
+
+def quantity_schema():
+
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "page2_quantity",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "rows": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "row_label": {
+                                    "type": "string"
+                                },
+                                "horizontal_values": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "integer"
+                                    }
+                                },
+                                "quantity_visible": {
+                                    "type": "boolean"
+                                },
+                                "quantity_has_entry": {
+                                    "type": "boolean"
+                                },
+                                "written_quantity": {
+                                    "type": "string"
+                                },
+                                "uncertain": {
+                                    "type": "boolean"
+                                }
+                            },
+                            "required": [
+                                "row_label",
+                                "horizontal_values",
+                                "quantity_visible",
+                                "quantity_has_entry",
+                                "written_quantity",
+                                "uncertain"
+                            ],
+                            "additionalProperties": False
+                        }
+                    }
+                },
+                "required": [
+                    "rows"
+                ],
+                "additionalProperties": False
+            }
+        }
+    }
+
+
+def read_page2_quantity(images):
+
+    if not images:
+        return {
+            "rows": []
+        }
+
+
+    prompt = """
+②役務申込書・指導内容の商品表の
+「数量」だけを確認します。
+
+最重要：
+
+印刷された列見出し
 
 「数量」
 
-を探してください。
+を最初に特定してください。
 
 
-その真下のセルだけが
+その列の真下のセルだけが
 数量欄です。
 
 
-数量列より右にある
+「数量」より右側にある、
 
-各単価
-小計
-商品定価
-消費税
-税込価格
-合計金額
+・各単価
+・小計
+・商品定価
+・消費税
+・税込金額
+・合計金額
 
-などは数量ではありません。
+などの金額を、
+絶対に数量として読み取らないでください。
 
 
-例えば横方向が
+例えば同じ行の横方向に
 
 1
 1
 1
 
-なら
+と記入されていれば
 
 horizontal_values=[1,1,1]
 
 
-同じ行の数量欄に3とあれば
+その行の数量欄に
+
+3
+
+と書かれていれば
 
 written_quantity="3"
 
-quantity_has_entry=true。
+quantity_has_entry=true
 
 
 数量欄が空欄なら
 
 written_quantity=""
-quantity_has_entry=false。
+quantity_has_entry=false
 
 
-数量欄そのものが画像に写っていなければ
+36000
+108000
+648000
+
+のような金額は数量ではありません。
+
+
+記入対象になっている行だけを rows に入れてください。
+
+
+数量セル自体が写真に写っていなければ
 
 quantity_visible=false。
 
 
-金額を数量として絶対に読まない。
+セルがはっきり見えて空欄なら
+
+quantity_visible=true
+quantity_has_entry=false
+uncertain=false。
 """
 
 
-# =========================================================
-# AI読取
-# =========================================================
+    content = [
+        {
+            "type": "text",
+            "text": prompt
+        }
+    ]
 
-def read_page1(images):
 
-    return send_images_to_ai(
+    for i, img in enumerate(
         images,
-        PAGE1_PROMPT
+        start=1
+    ):
+
+        content.append({
+            "type": "text",
+            "text": f"【数量表画像{i}】"
+        })
+
+        content.append({
+            "type": "image_url",
+            "image_url": {
+                "url": pil_to_data_url(img),
+                "detail": "high"
+            }
+        })
+
+
+    response = client.chat.completions.create(
+        model=MODEL,
+        messages=[
+            {
+                "role": "user",
+                "content": content
+            }
+        ],
+        response_format=quantity_schema()
     )
 
 
-def read_page2(images):
-
-    return send_images_to_ai(
-        images,
-        PAGE2_PROMPT
+    return json.loads(
+        response.choices[0].message.content
     )
 
 
 # =========================================================
-# field取得
+# 画像を領域に振り分ける
 # =========================================================
 
-def field_dict(data):
+def prepare_and_route(files, page):
 
-    result = {}
-
-    for item in data["fields"]:
-        result[item["key"]] = item
-
-    return result
-
-
-def blank_field(key):
-
-    return {
-        "key": key,
-        "visible": False,
-        "has_entry": False,
-        "selected": False,
-        "text": "",
-        "uncertain": True
+    prepared = []
+    routes = {
+        group: []
+        for group in (
+            PAGE1_GROUPS
+            if page == 1
+            else PAGE2_GROUPS
+        )
     }
 
+    infos = []
 
-def get_field(fields, key):
 
-    return fields.get(
-        key,
-        blank_field(key)
+    for index, uploaded in enumerate(
+        files,
+        start=1
+    ):
+
+        img, rotation = prepare_image(
+            uploaded
+        )
+
+
+        if page == 1:
+
+            classification = classify_page1_image(
+                img
+            )
+
+            groups = PAGE1_GROUPS
+
+        else:
+
+            classification = classify_page2_image(
+                img
+            )
+
+            groups = PAGE2_GROUPS
+
+
+        regions = classification[
+            "regions"
+        ]
+
+
+        if "full_document" in regions:
+
+            for group in groups:
+
+                routes[group].append(
+                    img
+                )
+
+        else:
+
+            for region in regions:
+
+                if region in routes:
+
+                    routes[region].append(
+                        img
+                    )
+
+
+        prepared.append(
+            img
+        )
+
+        infos.append({
+            "index": index,
+            "rotation": rotation,
+            "regions": regions,
+            "reason": classification[
+                "reason"
+            ]
+        })
+
+
+    return prepared, routes, infos
+
+
+# =========================================================
+# 1枚目まとめて読む
+# =========================================================
+
+def read_page1_all(routes):
+
+    fields = {}
+
+    fields.update(
+        read_page1_applicant(
+            routes["applicant"]
+        )
     )
 
+    fields.update(
+        read_page1_employment(
+            routes["employment"]
+        )
+    )
+
+    fields.update(
+        read_page1_household(
+            routes["household"]
+        )
+    )
+
+    fields.update(
+        read_page1_relation_top(
+            routes["relation_top"]
+        )
+    )
+
+    fields.update(
+        read_page1_relation_bottom(
+            routes["relation_bottom"]
+        )
+    )
+
+    fields.update(
+        read_page1_bank(
+            routes["bank"]
+        )
+    )
+
+    fields.update(
+        read_page1_contract_bottom(
+            routes["contract_bottom"]
+        )
+    )
+
+    return fields
+
 
 # =========================================================
-# 結果用
+# 2枚目まとめて読む
 # =========================================================
 
-def make_result(
+def read_page2_all(routes):
+
+    fields = {}
+
+    fields.update(
+        read_page2_guardian(
+            routes["guardian_address"]
+        )
+    )
+
+    fields.update(
+        read_page2_target_school(
+            routes["target_school"]
+        )
+    )
+
+    fields.update(
+        read_page2_course_dates(
+            routes["course_dates"]
+        )
+    )
+
+    fields.update(
+        read_page2_receipt(
+            routes["receipt"]
+        )
+    )
+
+    quantity = read_page2_quantity(
+        routes["quantity"]
+    )
+
+    return fields, quantity
+
+
+# =========================================================
+# 結果作成
+# =========================================================
+
+def result(
     name,
     status,
     observed,
@@ -1208,13 +1682,21 @@ def make_result(
     }
 
 
-def required_entry_result(
+def getf(fields, key):
+
+    return fields.get(
+        key,
+        blank_field()
+    )
+
+
+def entry_result(
     fields,
     key,
-    display_name
+    name
 ):
 
-    f = get_field(
+    f = getf(
         fields,
         key
     )
@@ -1222,18 +1704,18 @@ def required_entry_result(
 
     if not f["visible"]:
 
-        return make_result(
-            display_name,
+        return result(
+            name,
             "uncertain",
             "この欄が写真に写っていません",
-            "該当欄を確認できる写真がありません。"
+            "この項目を確認できる写真がありません。"
         )
 
 
     if f["uncertain"]:
 
-        return make_result(
-            display_name,
+        return result(
+            name,
             "uncertain",
             "判定できず",
             "画像から確実に判定できません。"
@@ -1242,29 +1724,29 @@ def required_entry_result(
 
     if f["has_entry"]:
 
-        return make_result(
-            display_name,
+        return result(
+            name,
             "ok",
             "記入あり",
             "指定欄に記入があります。"
         )
 
 
-    return make_result(
-        display_name,
+    return result(
+        name,
         "missing",
         "空欄",
-        f"「{display_name}」の指定欄が空欄です。"
+        f"「{name}」の指定欄が空欄です。"
     )
 
 
-def required_selection_result(
+def selection_result(
     fields,
     key,
-    display_name
+    name
 ):
 
-    f = get_field(
+    f = getf(
         fields,
         key
     )
@@ -1272,57 +1754,53 @@ def required_selection_result(
 
     if not f["visible"]:
 
-        return make_result(
-            display_name,
+        return result(
+            name,
             "uncertain",
             "この欄が写真に写っていません",
-            "該当する選択欄を確認できません。"
+            "この選択欄を確認できません。"
         )
 
 
     if f["uncertain"]:
 
-        return make_result(
-            display_name,
+        return result(
+            name,
             "uncertain",
-            "判定できず",
-            "○を確実に判定できません。"
+            "○を判定できず",
+            "画像から○を確実に判定できません。"
         )
 
 
     if f["selected"]:
 
-        return make_result(
-            display_name,
+        return result(
+            name,
             "ok",
             "○あり",
             "必要な選択を確認しました。"
         )
 
 
-    return make_result(
-        display_name,
+    return result(
+        name,
         "missing",
         "○なし",
-        f"「{display_name}」に必要な○がありません。"
+        f"「{name}」に必要な○がありません。"
     )
 
 
 # =========================================================
-# 1枚目判定
+# 1枚目 Python判定
 # =========================================================
 
-def page1_results(data):
-
-    fields = field_dict(
-        data
-    )
+def page1_results(fields):
 
     results = []
 
 
     results.append(
-        required_entry_result(
+        entry_result(
             fields,
             "applicant_name",
             "ご契約者氏名"
@@ -1331,7 +1809,7 @@ def page1_results(data):
 
 
     results.append(
-        required_entry_result(
+        entry_result(
             fields,
             "applicant_name_furigana",
             "ご契約者氏名フリガナ"
@@ -1340,12 +1818,12 @@ def page1_results(data):
 
 
     # 契約者住所
-    address = get_field(
+    address = getf(
         fields,
         "applicant_address"
     )
 
-    pref = get_field(
+    pref = getf(
         fields,
         "applicant_prefecture"
     )
@@ -1358,7 +1836,7 @@ def page1_results(data):
     ):
 
         results.append(
-            make_result(
+            result(
                 "ご契約者住所",
                 "uncertain",
                 "住所欄を確認できず",
@@ -1366,14 +1844,18 @@ def page1_results(data):
             )
         )
 
-    elif address["uncertain"] or pref["uncertain"]:
+    elif (
+        address["uncertain"]
+        or
+        pref["uncertain"]
+    ):
 
         results.append(
-            make_result(
+            result(
                 "ご契約者住所",
                 "uncertain",
                 "判定できず",
-                "住所または都道府県を確実に読み取れません。"
+                "住所または都道府県を確実に判定できません。"
             )
         )
 
@@ -1384,32 +1866,32 @@ def page1_results(data):
     ):
 
         results.append(
-            make_result(
+            result(
                 "ご契約者住所",
                 "ok",
                 f"都道府県：{pref['text'].strip()}",
-                "都道府県から住所が記入されています。"
+                "住所が都道府県から記入されています。"
             )
         )
 
     else:
 
         results.append(
-            make_result(
+            result(
                 "ご契約者住所",
                 "missing",
                 (
-                    "住所記入あり・都道府県なし"
+                    "都道府県名なし"
                     if address["has_entry"]
-                    else "住所欄が空欄"
+                    else "空欄"
                 ),
-                "ご住所は都道府県から記入する必要があります。"
+                "ご住所は都道府県名から記入する必要があります。"
             )
         )
 
 
     results.append(
-        required_entry_result(
+        entry_result(
             fields,
             "applicant_address_furigana",
             "ご契約者住所フリガナ"
@@ -1418,7 +1900,7 @@ def page1_results(data):
 
 
     # 雇用形態
-    employment_keys = [
+    employment = [
         (
             "employment_regular",
             "正社員"
@@ -1442,23 +1924,23 @@ def page1_results(data):
     ]
 
 
-    employment_visible = False
-    employment_uncertain = False
+    visible_count = 0
+    uncertain = False
     selected = []
 
 
-    for key, label in employment_keys:
+    for key, label in employment:
 
-        f = get_field(
+        f = getf(
             fields,
             key
         )
 
         if f["visible"]:
-            employment_visible = True
+            visible_count += 1
 
         if f["uncertain"]:
-            employment_uncertain = True
+            uncertain = True
 
         if f["selected"]:
             selected.append(
@@ -1466,32 +1948,32 @@ def page1_results(data):
             )
 
 
-    if not employment_visible:
+    if visible_count == 0:
 
         results.append(
-            make_result(
+            result(
                 "雇用形態",
                 "uncertain",
                 "雇用形態欄が写真に写っていません",
-                "雇用形態欄の写真が必要です。"
+                "雇用形態部分の写真が必要です。"
             )
         )
 
-    elif employment_uncertain:
+    elif uncertain:
 
         results.append(
-            make_result(
+            result(
                 "雇用形態",
                 "uncertain",
                 "○を判定できず",
-                "雇用形態の○を確実に判別できません。"
+                "雇用形態の○を確実に判定できません。"
             )
         )
 
     elif len(selected) == 1:
 
         results.append(
-            make_result(
+            result(
                 "雇用形態",
                 "ok",
                 selected[0],
@@ -1502,33 +1984,33 @@ def page1_results(data):
     elif len(selected) == 0:
 
         results.append(
-            make_result(
+            result(
                 "雇用形態",
                 "missing",
                 "○なし",
-                "雇用形態に○がありません。"
+                "雇用形態の選択がありません。"
             )
         )
 
     else:
 
         results.append(
-            make_result(
+            result(
                 "雇用形態",
                 "warning",
                 "・".join(selected),
-                "雇用形態が複数選択されています。"
+                "複数の雇用形態が選択されています。"
             )
         )
 
 
     # 派遣先
-    dispatch = get_field(
+    dispatch = getf(
         fields,
         "employment_dispatch"
     )
 
-    dispatch_company = get_field(
+    dispatch_company = getf(
         fields,
         "dispatch_company"
     )
@@ -1539,40 +2021,51 @@ def page1_results(data):
         if not dispatch_company["visible"]:
 
             results.append(
-                make_result(
+                result(
                     "派遣先・出向先",
                     "uncertain",
                     "派遣先欄が写真に写っていません",
-                    "派遣社員の場合は派遣先会社名の確認が必要です。"
+                    "派遣社員の場合は派遣先会社名を確認する必要があります。"
+                )
+            )
+
+        elif dispatch_company["uncertain"]:
+
+            results.append(
+                result(
+                    "派遣先・出向先",
+                    "uncertain",
+                    "判定できず",
+                    "派遣先会社名を確実に判定できません。"
                 )
             )
 
         elif dispatch_company["has_entry"]:
 
             results.append(
-                make_result(
+                result(
                     "派遣先・出向先",
                     "ok",
                     "記入あり",
-                    "派遣社員のため派遣先会社名を確認しました。"
+                    "派遣先・出向先会社名を確認しました。"
                 )
             )
 
         else:
 
             results.append(
-                make_result(
+                result(
                     "派遣先・出向先",
                     "missing",
                     "空欄",
-                    "派遣社員ですが、派遣先会社名が空欄です。"
+                    "派遣社員が選択されていますが、派遣先・出向先が空欄です。"
                 )
             )
 
     else:
 
         results.append(
-            make_result(
+            result(
                 "派遣先・出向先",
                 "not_applicable",
                 "対象外",
@@ -1582,7 +2075,7 @@ def page1_results(data):
 
 
     # 世帯主クレジット
-    monthly = get_field(
+    monthly = getf(
         fields,
         "household_credit_monthly"
     )
@@ -1591,29 +2084,29 @@ def page1_results(data):
     if not monthly["visible"]:
 
         results.append(
-            make_result(
+            result(
                 "世帯主クレジット月額",
                 "uncertain",
                 "該当欄が写真に写っていません",
-                "月あたりのお支払額欄を確認できません。"
+                "『世帯主のクレジットの月あたりのお支払額』を確認できません。"
             )
         )
 
     elif monthly["uncertain"]:
 
         results.append(
-            make_result(
+            result(
                 "世帯主クレジット月額",
                 "uncertain",
                 "読取不能",
-                "金額を確実に読み取れません。"
+                "指定欄の金額を確実に読み取れません。"
             )
         )
 
     elif not monthly["has_entry"]:
 
         results.append(
-            make_result(
+            result(
                 "世帯主クレジット月額",
                 "missing",
                 "空欄",
@@ -1639,7 +2132,7 @@ def page1_results(data):
         if amount is None:
 
             results.append(
-                make_result(
+                result(
                     "世帯主クレジット月額",
                     "uncertain",
                     monthly["text"],
@@ -1650,22 +2143,22 @@ def page1_results(data):
         elif amount > 100000:
 
             results.append(
-                make_result(
+                result(
                     "世帯主クレジット月額",
                     "warning",
                     f"{amount:,}円",
-                    "100,000円を超えています。"
+                    "月あたりのお支払額が100,000円を超えています。"
                 )
             )
 
         else:
 
             results.append(
-                make_result(
+                result(
                     "世帯主クレジット月額",
                     "ok",
                     f"{amount:,}円",
-                    "100,000円以下です。"
+                    "月あたりのお支払額は100,000円以下です。"
                 )
             )
 
@@ -1674,201 +2167,211 @@ def page1_results(data):
     # 関係者情報
     # =====================================================
 
-    relation_items = [
-        (
+    results.append(
+        entry_result(
+            fields,
             "relation_name",
-            "関係者情報・氏名",
-            "entry"
-        ),
-        (
-            "relation_name_furigana",
-            "関係者情報・氏名フリガナ",
-            "entry"
-        ),
-        (
-            "relation_sex",
-            "関係者情報・性別",
-            "selection"
-        ),
-        (
-            "relation_birthdate",
-            "関係者情報・生年月日",
-            "entry"
-        ),
-        (
-            "relation_relationship",
-            "関係者情報・ご契約者との関係",
-            "selection"
-        ),
-        (
-            "relation_address",
-            "関係者情報・ご住所",
-            "entry"
-        ),
-        (
-            "relation_residence",
-            "関係者情報・ご住居",
-            "selection"
-        ),
-        (
-            "relation_income",
-            "関係者情報・税込年収",
-            "entry"
-        ),
-        (
-            "relation_employment",
-            "関係者情報・雇用形態",
-            "selection"
-        ),
-        (
-            "relation_years_service",
-            "関係者情報・勤務年数",
-            "entry"
-        ),
-        (
-            "relation_payday",
-            "関係者情報・給料日",
-            "entry"
-        ),
-        (
-            "relation_employer_name",
-            "関係者情報・会社名",
-            "entry"
-        ),
-        (
-            "relation_location_postal",
-            "関係者情報・所在地の郵便番号",
-            "entry"
-        ),
-        (
-            "relation_location_phone",
-            "関係者情報・所在地の電話番号",
-            "entry"
+            "関係者情報・氏名"
         )
-    ]
+    )
 
+    results.append(
+        entry_result(
+            fields,
+            "relation_name_furigana",
+            "関係者情報・氏名フリガナ"
+        )
+    )
 
-    for key, name, kind in relation_items:
+    results.append(
+        selection_result(
+            fields,
+            "relation_sex",
+            "関係者情報・性別"
+        )
+    )
 
-        if kind == "entry":
+    results.append(
+        entry_result(
+            fields,
+            "relation_birthdate",
+            "関係者情報・生年月日"
+        )
+    )
 
-            results.append(
-                required_entry_result(
-                    fields,
-                    key,
-                    name
-                )
-            )
-
-        else:
-
-            results.append(
-                required_selection_result(
-                    fields,
-                    key,
-                    name
-                )
-            )
-
-
-    # 所在地
-    location = get_field(
-        fields,
-        "relation_location"
+    results.append(
+        selection_result(
+            fields,
+            "relation_relationship",
+            "関係者情報・ご契約者との関係"
+        )
     )
 
 
-    if not location["visible"]:
+    # 関係者住所：実住所 or 同上
+    rel_address = getf(
+        fields,
+        "relation_address"
+    )
+
+    rel_address_same = getf(
+        fields,
+        "relation_address_same"
+    )
+
+
+    if (
+        not rel_address["visible"]
+        and
+        not rel_address_same["visible"]
+    ):
 
         results.append(
-            make_result(
-                "関係者情報・所在地",
+            result(
+                "関係者情報・ご住所",
                 "uncertain",
-                "所在地欄が写真に写っていません",
-                "所在地欄を確認できません。"
+                "住所欄が写真に写っていません",
+                "関係者情報のご住所欄を確認できません。"
             )
         )
 
-    elif location["uncertain"]:
+    elif (
+        rel_address["uncertain"]
+        or
+        rel_address_same["uncertain"]
+    ):
 
         results.append(
-            make_result(
-                "関係者情報・所在地",
+            result(
+                "関係者情報・ご住所",
                 "uncertain",
                 "判定できず",
-                "所在地欄を確実に判定できません。"
+                "関係者住所を確実に判定できません。"
             )
         )
 
-    elif location["has_entry"]:
+    elif (
+        rel_address["has_entry"]
+        or
+        rel_address_same["has_entry"]
+    ):
 
         results.append(
-            make_result(
-                "関係者情報・所在地",
+            result(
+                "関係者情報・ご住所",
                 "ok",
                 (
                     "同上"
-                    if "同上" in location["text"]
+                    if rel_address_same["has_entry"]
                     else "記入あり"
                 ),
-                "所在地の記入を確認しました。"
+                "ご住所欄に実住所または『同上』があります。"
             )
         )
 
     else:
 
         results.append(
-            make_result(
-                "関係者情報・所在地",
+            result(
+                "関係者情報・ご住所",
                 "missing",
                 "空欄",
-                "関係者情報の所在地欄が空欄です。"
+                "関係者情報のご住所欄が空欄です。"
             )
         )
 
 
-    # 連絡先
-    home_phone = get_field(
+    results.append(
+        entry_result(
+            fields,
+            "relation_address_postal",
+            "関係者情報・ご住所の郵便番号"
+        )
+    )
+
+    results.append(
+        selection_result(
+            fields,
+            "relation_residence",
+            "関係者情報・ご住居"
+        )
+    )
+
+
+    # 本人連絡先
+    home = getf(
         fields,
         "relation_home_phone"
     )
 
-    mobile = get_field(
+    mobile = getf(
         fields,
         "relation_mobile"
     )
 
 
     if (
-        not home_phone["visible"]
+        not home["visible"]
         and
         not mobile["visible"]
     ):
 
         results.append(
-            make_result(
+            result(
                 "関係者情報・連絡先",
                 "uncertain",
-                "連絡先欄が写真に写っていません",
-                "固定電話または携帯番号の確認が必要です。"
+                "電話番号欄が写真に写っていません",
+                "固定電話・携帯番号を確認できません。"
             )
         )
 
     elif (
-        home_phone["has_entry"]
+        home["uncertain"]
+        or
+        mobile["uncertain"]
+    ) and not (
+        home["has_entry"]
         or
         mobile["has_entry"]
     ):
 
         results.append(
-            make_result(
+            result(
+                "関係者情報・連絡先",
+                "uncertain",
+                "判定できず",
+                "固定電話・携帯番号を確実に判定できません。"
+            )
+        )
+
+    elif (
+        home["has_entry"]
+        or
+        mobile["has_entry"]
+    ):
+
+        if (
+            home["has_entry"]
+            and
+            mobile["has_entry"]
+        ):
+
+            observed = "固定電話あり・携帯番号あり"
+
+        elif home["has_entry"]:
+
+            observed = "固定電話あり"
+
+        else:
+
+            observed = "携帯番号あり"
+
+
+        results.append(
+            result(
                 "関係者情報・連絡先",
                 "ok",
-                (
-                    "固定電話あり"
-                    if home_phone["has_entry"]
-                    else "携帯番号あり"
-                ),
+                observed,
                 "固定電話または携帯番号を確認しました。"
             )
         )
@@ -1876,7 +2379,7 @@ def page1_results(data):
     else:
 
         results.append(
-            make_result(
+            result(
                 "関係者情報・連絡先",
                 "missing",
                 "固定電話・携帯番号ともに空欄",
@@ -1885,13 +2388,144 @@ def page1_results(data):
         )
 
 
-    # 銀行口座
-    yucho = get_field(
+    results.append(
+        entry_result(
+            fields,
+            "relation_income",
+            "関係者情報・税込年収"
+        )
+    )
+
+    results.append(
+        selection_result(
+            fields,
+            "relation_employment",
+            "関係者情報・雇用形態"
+        )
+    )
+
+    results.append(
+        entry_result(
+            fields,
+            "relation_years_service",
+            "関係者情報・勤務年数"
+        )
+    )
+
+    results.append(
+        entry_result(
+            fields,
+            "relation_payday",
+            "関係者情報・給料日"
+        )
+    )
+
+    results.append(
+        entry_result(
+            fields,
+            "relation_employer_name",
+            "関係者情報・会社名"
+        )
+    )
+
+
+    # 所在地
+    location = getf(
+        fields,
+        "relation_location"
+    )
+
+    location_same = getf(
+        fields,
+        "relation_location_same"
+    )
+
+
+    if (
+        not location["visible"]
+        and
+        not location_same["visible"]
+    ):
+
+        results.append(
+            result(
+                "関係者情報・所在地",
+                "uncertain",
+                "所在地欄が写真に写っていません",
+                "関係者情報の所在地欄を確認できません。"
+            )
+        )
+
+    elif (
+        location["uncertain"]
+        or
+        location_same["uncertain"]
+    ):
+
+        results.append(
+            result(
+                "関係者情報・所在地",
+                "uncertain",
+                "判定できず",
+                "所在地を確実に判定できません。"
+            )
+        )
+
+    elif (
+        location["has_entry"]
+        or
+        location_same["has_entry"]
+    ):
+
+        results.append(
+            result(
+                "関係者情報・所在地",
+                "ok",
+                (
+                    "同上"
+                    if location_same["has_entry"]
+                    else "記入あり"
+                ),
+                "所在地欄に実住所または『同上』があります。"
+            )
+        )
+
+    else:
+
+        results.append(
+            result(
+                "関係者情報・所在地",
+                "missing",
+                "空欄",
+                "関係者情報の所在地欄が空欄です。"
+            )
+        )
+
+
+    results.append(
+        entry_result(
+            fields,
+            "relation_location_postal",
+            "関係者情報・所在地の郵便番号"
+        )
+    )
+
+    results.append(
+        entry_result(
+            fields,
+            "relation_location_phone",
+            "関係者情報・所在地の電話番号"
+        )
+    )
+
+
+    # 銀行
+    yucho = getf(
         fields,
         "bank_yucho"
     )
 
-    other_bank = get_field(
+    other = getf(
         fields,
         "bank_other"
     )
@@ -1900,37 +2534,56 @@ def page1_results(data):
     if (
         not yucho["visible"]
         and
-        not other_bank["visible"]
+        not other["visible"]
     ):
 
         results.append(
-            make_result(
+            result(
                 "銀行口座",
                 "uncertain",
                 "銀行口座欄が写真に写っていません",
-                "銀行口座欄を確認できません。"
+                "銀行口座部分の写真が必要です。"
+            )
+        )
+
+    elif (
+        yucho["uncertain"]
+        or
+        other["uncertain"]
+    ) and not (
+        yucho["has_entry"]
+        or
+        other["has_entry"]
+    ):
+
+        results.append(
+            result(
+                "銀行口座",
+                "uncertain",
+                "判定できず",
+                "銀行口座の記入を確実に判定できません。"
             )
         )
 
     elif (
         yucho["has_entry"]
         or
-        other_bank["has_entry"]
+        other["has_entry"]
     ):
 
         results.append(
-            make_result(
+            result(
                 "銀行口座",
                 "ok",
                 "記入あり",
-                "ゆうちょまたはゆうちょ以外の記入があります。"
+                "ゆうちょまたはゆうちょ以外の銀行口座に記入があります。"
             )
         )
 
     else:
 
         results.append(
-            make_result(
+            result(
                 "銀行口座",
                 "missing",
                 "両方空欄",
@@ -1940,34 +2593,31 @@ def page1_results(data):
 
 
     results.append(
-        required_entry_result(
+        entry_result(
             fields,
             "bank_account_furigana",
             "口座名義人フリガナ"
         )
     )
 
-
     results.append(
-        required_entry_result(
+        entry_result(
             fields,
             "page1_service_period",
             "役務提供期間"
         )
     )
 
-
     results.append(
-        required_entry_result(
+        entry_result(
             fields,
             "legal_receipt_date",
             "第42条書面の受領年月日"
         )
     )
 
-
     results.append(
-        required_entry_result(
+        entry_result(
             fields,
             "payment_months",
             "支払ヶ月"
@@ -1982,46 +2632,43 @@ def page1_results(data):
 # 2枚目判定
 # =========================================================
 
-def expected_prefecture_mark(prefecture):
+def expected_prefecture_mark(pref):
 
-    if prefecture == "東京都":
+    if pref == "東京都":
         return "都"
 
-    if prefecture == "北海道":
+    if pref == "北海道":
         return "道"
 
-    if prefecture in [
+    if pref in [
         "大阪府",
         "京都府"
     ]:
         return "府"
 
-    if prefecture.endswith("県"):
+    if pref.endswith(
+        "県"
+    ):
         return "県"
 
     return None
 
 
-def page2_results(data):
-
-    fields = field_dict(
-        data
-    )
+def page2_results(fields, quantity_data):
 
     results = []
 
 
     results.append(
-        required_entry_result(
+        entry_result(
             fields,
             "guardian_name",
             "保護者氏名"
         )
     )
 
-
     results.append(
-        required_entry_result(
+        entry_result(
             fields,
             "guardian_furigana",
             "保護者氏名フリガナ"
@@ -2029,17 +2676,15 @@ def page2_results(data):
     )
 
 
-    # 住所＋都道府県
-    address = get_field(
+    address = getf(
         fields,
         "page2_address"
     )
 
-    pref_field = get_field(
+    pref_field = getf(
         fields,
         "page2_prefecture"
     )
-
 
     pref = pref_field[
         "text"
@@ -2047,21 +2692,21 @@ def page2_results(data):
 
 
     marks = {
-        "都": get_field(
+        "都": getf(
             fields,
-            "prefecture_mark_to"
+            "prefecture_to"
         ),
-        "道": get_field(
+        "道": getf(
             fields,
-            "prefecture_mark_do"
+            "prefecture_do"
         ),
-        "府": get_field(
+        "府": getf(
             fields,
-            "prefecture_mark_fu"
+            "prefecture_fu"
         ),
-        "県": get_field(
+        "県": getf(
             fields,
-            "prefecture_mark_ken"
+            "prefecture_ken"
         )
     }
 
@@ -2073,22 +2718,37 @@ def page2_results(data):
     ):
 
         results.append(
-            make_result(
+            result(
                 "ご住所・連絡先",
                 "uncertain",
                 "住所欄が写真に写っていません",
-                "住所・都道府県の確認ができません。"
+                "住所・都道府県を確認できません。"
+            )
+        )
+
+    elif (
+        address["uncertain"]
+        or
+        pref_field["uncertain"]
+    ):
+
+        results.append(
+            result(
+                "ご住所・連絡先",
+                "uncertain",
+                "判定できず",
+                "住所を確実に判定できません。"
             )
         )
 
     elif pref not in PREFECTURES:
 
         results.append(
-            make_result(
+            result(
                 "ご住所・連絡先",
                 "missing",
-                "都道府県を確認できず",
-                "住所は都道府県から記入する必要があります。"
+                "都道府県名なし",
+                "住所は都道府県名から記入する必要があります。"
             )
         )
 
@@ -2100,8 +2760,8 @@ def page2_results(data):
 
         selected_marks = [
             mark
-            for mark, value in marks.items()
-            if value["selected"]
+            for mark, f in marks.items()
+            if f["selected"]
         ]
 
 
@@ -2112,21 +2772,21 @@ def page2_results(data):
         ):
 
             results.append(
-                make_result(
+                result(
                     "ご住所・連絡先",
                     "ok",
                     f"{pref} / {expected}に○",
-                    "都道府県名と○を確認しました。"
+                    "都道府県名と対応する○を確認しました。"
                 )
             )
 
         elif len(selected_marks) == 0:
 
             results.append(
-                make_result(
+                result(
                     "ご住所・連絡先",
                     "missing",
-                    f"{pref} / 都道府県の○なし",
+                    f"{pref} / 都・道・府・県の○なし",
                     "都・道・府・県の対応する文字に○がありません。"
                 )
             )
@@ -2134,7 +2794,7 @@ def page2_results(data):
         else:
 
             results.append(
-                make_result(
+                result(
                     "ご住所・連絡先",
                     "warning",
                     f"{pref} / ○：{'・'.join(selected_marks)}",
@@ -2144,7 +2804,7 @@ def page2_results(data):
 
 
     results.append(
-        required_selection_result(
+        selection_result(
             fields,
             "target_a_yes",
             "指導対象A・有"
@@ -2152,8 +2812,7 @@ def page2_results(data):
     )
 
 
-    # 公国私
-    school_keys = [
+    school = [
         (
             "school_public",
             "公"
@@ -2168,21 +2827,20 @@ def page2_results(data):
         )
     ]
 
-
-    visible = False
+    visible = 0
     uncertain = False
     selected = []
 
 
-    for key, label in school_keys:
+    for key, label in school:
 
-        f = get_field(
+        f = getf(
             fields,
             key
         )
 
         if f["visible"]:
-            visible = True
+            visible += 1
 
         if f["uncertain"]:
             uncertain = True
@@ -2193,32 +2851,32 @@ def page2_results(data):
             )
 
 
-    if not visible:
+    if visible == 0:
 
         results.append(
-            make_result(
+            result(
                 "公・国・私",
                 "uncertain",
-                "該当欄が写真に写っていません",
-                "公・国・私の欄を確認できません。"
+                "この欄が写真に写っていません",
+                "公・国・私を確認できません。"
             )
         )
 
     elif uncertain:
 
         results.append(
-            make_result(
+            result(
                 "公・国・私",
                 "uncertain",
-                "判定できず",
-                "○を確実に判定できません。"
+                "○を判定できず",
+                "公・国・私の○を確実に判定できません。"
             )
         )
 
     elif len(selected) == 1:
 
         results.append(
-            make_result(
+            result(
                 "公・国・私",
                 "ok",
                 selected[0],
@@ -2229,7 +2887,7 @@ def page2_results(data):
     elif len(selected) == 0:
 
         results.append(
-            make_result(
+            result(
                 "公・国・私",
                 "missing",
                 "○なし",
@@ -2240,17 +2898,17 @@ def page2_results(data):
     else:
 
         results.append(
-            make_result(
+            result(
                 "公・国・私",
                 "warning",
                 "・".join(selected),
-                "複数に○があります。"
+                "公・国・私に複数の○があります。"
             )
         )
 
 
-    # コース名
-    course = get_field(
+    # コース
+    course = getf(
         fields,
         "course_name"
     )
@@ -2259,7 +2917,7 @@ def page2_results(data):
     if not course["visible"]:
 
         results.append(
-            make_result(
+            result(
                 "コース名",
                 "uncertain",
                 "コース名欄が写真に写っていません",
@@ -2267,10 +2925,21 @@ def page2_results(data):
             )
         )
 
+    elif course["uncertain"]:
+
+        results.append(
+            result(
+                "コース名",
+                "uncertain",
+                "判定できず",
+                "コース名を確実に読めません。"
+            )
+        )
+
     elif not course["has_entry"]:
 
         results.append(
-            make_result(
+            result(
                 "コース名",
                 "missing",
                 "空欄",
@@ -2308,12 +2977,12 @@ def page2_results(data):
 
 
         results.append(
-            make_result(
+            result(
                 "コース名",
                 "ok" if ok else "missing",
                 course["text"],
                 (
-                    "『週1 90分』を確認しました。"
+                    "コース名欄に『週1 90分』があります。"
                     if ok
                     else
                     "コース名欄に『週1 90分』を確認できません。"
@@ -2323,16 +2992,15 @@ def page2_results(data):
 
 
     results.append(
-        required_entry_result(
+        entry_result(
             fields,
             "initial_instruction_date",
             "初回指導日"
         )
     )
 
-
     results.append(
-        required_entry_result(
+        entry_result(
             fields,
             "service_period_a",
             "役務提供期間A"
@@ -2341,16 +3009,15 @@ def page2_results(data):
 
 
     # 数量
-    rows = data[
-        "quantity_rows"
+    rows = quantity_data[
+        "rows"
     ]
 
-    quantity_lines = []
+    lines = []
 
     has_missing = False
     has_warning = False
     has_uncertain = False
-
     checked = 0
 
 
@@ -2360,8 +3027,10 @@ def page2_results(data):
             "horizontal_values"
         ]
 
+
         if not values:
             continue
+
 
         checked += 1
 
@@ -2370,10 +3039,12 @@ def page2_results(data):
         )
 
         label = (
-            row["row_label"]
-            or f"{checked}行目"
+            row[
+                "row_label"
+            ].strip()
+            or
+            f"{checked}行目"
         )
-
 
         calc = (
             " + ".join(
@@ -2391,7 +3062,7 @@ def page2_results(data):
 
             has_uncertain = True
 
-            quantity_lines.append(
+            lines.append(
                 f"{label}：{calc} / 数量欄が写真に写っていません"
             )
 
@@ -2404,7 +3075,7 @@ def page2_results(data):
 
             has_uncertain = True
 
-            quantity_lines.append(
+            lines.append(
                 f"{label}：{calc} / 数量欄：判定不能"
             )
 
@@ -2417,14 +3088,14 @@ def page2_results(data):
 
             has_missing = True
 
-            quantity_lines.append(
+            lines.append(
                 f"{label}：{calc} / 数量欄：空欄"
             )
 
             continue
 
 
-        number_match = re.search(
+        match = re.search(
             r"\d+",
             row[
                 "written_quantity"
@@ -2432,11 +3103,11 @@ def page2_results(data):
         )
 
 
-        if not number_match:
+        if not match:
 
             has_uncertain = True
 
-            quantity_lines.append(
+            lines.append(
                 f"{label}：{calc} / 数量欄：読取不能"
             )
 
@@ -2444,7 +3115,7 @@ def page2_results(data):
 
 
         written = int(
-            number_match.group()
+            match.group()
         )
 
 
@@ -2452,7 +3123,7 @@ def page2_results(data):
 
             has_uncertain = True
 
-            quantity_lines.append(
+            lines.append(
                 f"{label}：{calc} / 数量欄：{written}"
                 "（金額誤読の可能性）"
             )
@@ -2461,13 +3132,13 @@ def page2_results(data):
 
             has_warning = True
 
-            quantity_lines.append(
+            lines.append(
                 f"{label}：{calc} / 数量欄：{written}"
             )
 
         else:
 
-            quantity_lines.append(
+            lines.append(
                 f"{label}：{calc} / 数量欄：{written}"
             )
 
@@ -2485,28 +3156,26 @@ def page2_results(data):
     elif has_uncertain:
 
         q_status = "uncertain"
-        q_reason = "数量欄を確認できない行があります。"
+        q_reason = "数量欄を確実に確認できない行があります。"
 
     elif checked > 0:
 
         q_status = "ok"
-        q_reason = "各行の数量を確認しました。"
+        q_reason = "各行の横方向の合計と数量欄を確認しました。"
 
     else:
 
         q_status = "uncertain"
-        q_reason = "数量表が写っている画像を確認できません。"
+        q_reason = "数量表を確認できる写真がありません。"
 
 
     results.append(
-        make_result(
+        result(
             "数量",
             q_status,
             (
-                " / ".join(
-                    quantity_lines
-                )
-                if quantity_lines
+                " / ".join(lines)
+                if lines
                 else "数量表を確認できず"
             ),
             q_reason
@@ -2515,7 +3184,7 @@ def page2_results(data):
 
 
     results.append(
-        required_entry_result(
+        entry_result(
             fields,
             "receipt_signature",
             "受領サイン"
@@ -2527,7 +3196,7 @@ def page2_results(data):
 
 
 # =========================================================
-# 結果表示
+# 表示
 # =========================================================
 
 def display_item(item):
@@ -2537,22 +3206,18 @@ def display_item(item):
             "✅",
             "問題なし"
         ),
-
         "missing": (
             "❌",
             "記入漏れ"
         ),
-
         "warning": (
             "⚠️",
             "要注意"
         ),
-
         "not_applicable": (
             "➖",
             "対象外"
         ),
-
         "uncertain": (
             "🔍",
             "要確認"
@@ -2560,13 +3225,9 @@ def display_item(item):
     }
 
 
-    icon, label = mapping.get(
-        item["status"],
-        (
-            "🔍",
-            "要確認"
-        )
-    )
+    icon, label = mapping[
+        item["status"]
+    ]
 
 
     with st.container(
@@ -2587,39 +3248,56 @@ def display_item(item):
         )
 
 
-# =========================================================
-# 複数ファイル準備
-# =========================================================
+def display_routing(infos):
 
-def prepare_multiple_files(files):
+    labels = {
+        "applicant": "契約者本人情報",
+        "employment": "勤務先・雇用形態",
+        "household": "世帯状況",
+        "relation_top": "関係者情報・上側",
+        "relation_bottom": "関係者情報・勤務先側",
+        "bank": "銀行口座",
+        "contract_bottom": "契約下部",
+        "guardian_address": "保護者氏名・住所",
+        "target_school": "指導対象A・公国私",
+        "course_dates": "コース名・日付",
+        "quantity": "数量表",
+        "receipt": "受領サイン",
+        "full_document": "書類全体",
+        "unknown": "判定できず"
+    }
 
-    images = []
 
-    rotation_infos = []
+    for info in infos:
+
+        readable = [
+            labels.get(
+                r,
+                r
+            )
+            for r in info["regions"]
+        ]
 
 
-    for index, uploaded in enumerate(
-        files,
-        start=1
-    ):
-
-        img, rotation = prepare_image(
-            uploaded
+        st.write(
+            f"**画像{info['index']}**："
+            +
+            " / ".join(readable)
         )
 
-        images.append(
-            img
+        if info[
+            "rotation"
+        ] != 0:
+
+            st.caption(
+                f"{info['rotation']}°回転して向きを補正"
+            )
+
+        st.caption(
+            info[
+                "reason"
+            ]
         )
-
-        rotation_infos.append(
-            {
-                "index": index,
-                "rotation": rotation
-            }
-        )
-
-
-    return images, rotation_infos
 
 
 # =========================================================
@@ -2633,18 +3311,13 @@ st.markdown(
 )
 
 st.info(
-    "1枚の全体写真でもOK。"
-    "4分割して近くから撮った写真でもOK。"
-    "全体＋アップ写真を一緒に入れてもOKです。"
+    "おすすめは「全体1枚＋アップ写真」です。"
+    "ただし4分割したアップ写真だけでも使えます。"
 )
 
-
-st.markdown(
-    "### ① クレジット申込書"
-)
 
 files1 = st.file_uploader(
-    "1枚目の写真を1〜6枚選択",
+    "① クレジット申込書の写真",
     type=[
         "jpg",
         "jpeg",
@@ -2655,12 +3328,8 @@ files1 = st.file_uploader(
 )
 
 
-st.markdown(
-    "### ② 役務申込書・指導内容"
-)
-
 files2 = st.file_uploader(
-    "2枚目の写真を1〜6枚選択",
+    "② 役務申込書・指導内容の写真",
     type=[
         "jpg",
         "jpeg",
@@ -2672,13 +3341,13 @@ files2 = st.file_uploader(
 
 
 st.caption(
-    "分割して撮る場合は、"
-    "項目名や見出しが少し入るように撮ると精度が上がります。"
+    "各書類1〜6枚まで。"
+    "分割写真では項目名・見出しも一緒に写すと精度が上がります。"
 )
 
 
 # =========================================================
-# チェック実行
+# 実行
 # =========================================================
 
 if st.button(
@@ -2696,6 +3365,24 @@ if st.button(
         st.stop()
 
 
+    if len(files1) > 6:
+
+        st.error(
+            "①は最大6枚までです。"
+        )
+
+        st.stop()
+
+
+    if len(files2) > 6:
+
+        st.error(
+            "②は最大6枚までです。"
+        )
+
+        st.stop()
+
+
     total_missing = 0
     total_warning = 0
     total_uncertain = 0
@@ -2703,37 +3390,34 @@ if st.button(
 
     try:
 
-        # =====================================================
+        # =================================================
         # 1枚目
-        # =====================================================
+        # =================================================
 
         if files1:
 
-            if len(files1) > 6:
-
-                st.error(
-                    "1枚目は最大6枚までにしてください。"
-                )
-
-                st.stop()
-
-
             with st.spinner(
-                "① 写真の向きと各領域を確認しています…"
+                "① 写真を1枚ずつ分類しています…"
             ):
 
-                images1, rotations1 = (
-                    prepare_multiple_files(
-                        files1
+                prepared1, routes1, infos1 = (
+                    prepare_and_route(
+                        files1,
+                        1
                     )
                 )
 
-                data1 = read_page1(
-                    images1
+
+            with st.spinner(
+                "① 各領域を専用AIで確認しています…"
+            ):
+
+                fields1 = read_page1_all(
+                    routes1
                 )
 
                 results1 = page1_results(
-                    data1
+                    fields1
                 )
 
 
@@ -2744,29 +3428,14 @@ if st.button(
             )
 
 
-            # AIがどこだと判断したか表示
             with st.expander(
-                "📍 AIが判断した写真の場所"
+                "📍 AIが判断した各写真の場所",
+                expanded=True
             ):
 
-                for region in data1[
-                    "detected_regions"
-                ]:
-
-                    st.write(
-                        f"画像{region['image_index']}："
-                        f"**{region['region']}**"
-                    )
-
-                    if region[
-                        "description"
-                    ]:
-
-                        st.caption(
-                            region[
-                                "description"
-                            ]
-                        )
+                display_routing(
+                    infos1
+                )
 
 
             with st.expander(
@@ -2774,7 +3443,7 @@ if st.button(
             ):
 
                 for i, img in enumerate(
-                    images1,
+                    prepared1,
                     start=1
                 ):
 
@@ -2813,37 +3482,35 @@ if st.button(
                     total_uncertain += 1
 
 
-        # =====================================================
+        # =================================================
         # 2枚目
-        # =====================================================
+        # =================================================
 
         if files2:
 
-            if len(files2) > 6:
-
-                st.error(
-                    "2枚目は最大6枚までにしてください。"
-                )
-
-                st.stop()
-
-
             with st.spinner(
-                "② 写真の向きと各領域を確認しています…"
+                "② 写真を1枚ずつ分類しています…"
             ):
 
-                images2, rotations2 = (
-                    prepare_multiple_files(
-                        files2
+                prepared2, routes2, infos2 = (
+                    prepare_and_route(
+                        files2,
+                        2
                     )
                 )
 
-                data2 = read_page2(
-                    images2
+
+            with st.spinner(
+                "② 各領域を専用AIで確認しています…"
+            ):
+
+                fields2, quantity2 = read_page2_all(
+                    routes2
                 )
 
                 results2 = page2_results(
-                    data2
+                    fields2,
+                    quantity2
                 )
 
 
@@ -2855,27 +3522,13 @@ if st.button(
 
 
             with st.expander(
-                "📍 AIが判断した写真の場所"
+                "📍 AIが判断した各写真の場所",
+                expanded=True
             ):
 
-                for region in data2[
-                    "detected_regions"
-                ]:
-
-                    st.write(
-                        f"画像{region['image_index']}："
-                        f"**{region['region']}**"
-                    )
-
-                    if region[
-                        "description"
-                    ]:
-
-                        st.caption(
-                            region[
-                                "description"
-                            ]
-                        )
+                display_routing(
+                    infos2
+                )
 
 
             with st.expander(
@@ -2883,7 +3536,7 @@ if st.button(
             ):
 
                 for i, img in enumerate(
-                    images2,
+                    prepared2,
                     start=1
                 ):
 
@@ -2922,9 +3575,9 @@ if st.button(
                     total_uncertain += 1
 
 
-        # =====================================================
+        # =================================================
         # まとめ
-        # =====================================================
+        # =================================================
 
         st.divider()
 
@@ -2942,40 +3595,33 @@ if st.button(
         ):
 
             st.success(
-                "✅ 現在のチェック項目では"
-                "問題は見つかりませんでした。"
+                "✅ 現在のチェック項目では問題は見つかりませんでした。"
             )
 
         else:
 
-            if total_missing > 0:
+            if total_missing:
 
                 st.error(
-                    f"❌ 記入漏れ："
-                    f"{total_missing}件"
+                    f"❌ 記入漏れ：{total_missing}件"
                 )
 
-
-            if total_warning > 0:
+            if total_warning:
 
                 st.warning(
-                    f"⚠️ 要注意："
-                    f"{total_warning}件"
+                    f"⚠️ 要注意：{total_warning}件"
                 )
 
-
-            if total_uncertain > 0:
+            if total_uncertain:
 
                 st.info(
-                    f"🔍 要確認："
-                    f"{total_uncertain}件"
+                    f"🔍 要確認：{total_uncertain}件"
                 )
 
 
             st.caption(
-                "「この欄が写真に写っていません」は、"
-                "空欄という意味ではありません。"
-                "その部分の写真を追加すると判定できます。"
+                "「写真に写っていません」は記入漏れではありません。"
+                "その部分のアップ写真を追加してください。"
             )
 
 

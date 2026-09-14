@@ -6,275 +6,219 @@ import json
 from openai import OpenAI
 
 
+# ==========================================
+# 基本設定
+# ==========================================
+
 st.set_page_config(
-    page_title="雇用形態テスト",
-    page_icon="🔍",
+    page_title="住所フリガナチェック",
+    page_icon="✅",
     layout="centered"
 )
 
-st.title("🔍 雇用形態テスト")
+st.title("住所フリガナ判定テスト")
 
-client = OpenAI(
-    api_key=st.secrets["OPENAI_API_KEY"]
+st.caption(
+    "契約書の写真を入れて、「ご住所」に対応するフリガナ欄に"
+    "記入があるかだけを判定します。"
 )
+
+
+# ==========================================
+# OpenAI
+# ==========================================
+
+try:
+    client = OpenAI(
+        api_key=st.secrets["OPENAI_API_KEY"]
+    )
+except Exception:
+    st.error("OPENAI_API_KEYを確認してください。")
+    st.stop()
+
 
 MODEL = "gpt-5.4-mini"
 
 
-# =========================================================
-# 画像
-# =========================================================
+# ==========================================
+# 画像処理
+# ==========================================
+
+def prepare_image(img):
+
+    # iPhone等の写真の向きを補正
+    img = ImageOps.exif_transpose(img)
+
+    img = img.convert("RGB")
+
+    # 大きすぎる場合だけ縮小
+    if max(img.size) > 2400:
+        img.thumbnail(
+            (2400, 2400),
+            Image.Resampling.LANCZOS
+        )
+
+    return img
+
 
 def image_to_data_url(img):
 
-    buf = BytesIO()
+    buffer = BytesIO()
 
-    img.convert("RGB").save(
-        buf,
+    img.save(
+        buffer,
         format="JPEG",
         quality=95
     )
 
-    return (
-        "data:image/jpeg;base64,"
-        + base64.b64encode(buf.getvalue()).decode()
-    )
+    encoded = base64.b64encode(
+        buffer.getvalue()
+    ).decode("utf-8")
+
+    return f"data:image/jpeg;base64,{encoded}"
 
 
-# =========================================================
-# Schema
-# =========================================================
+# ==========================================
+# AI判定
+# ==========================================
 
-def schema():
+def check_address_furigana(images):
 
-    choice = {
-        "type": "object",
-        "properties": {
-            "label_visible": {
-                "type": "boolean"
-            },
-            "circle_present": {
-                "type": "boolean"
-            },
-            "confidence": {
-                "type": "string",
-                "enum": [
-                    "high",
-                    "medium",
-                    "low"
-                ]
-            }
-        },
-        "required": [
-            "label_visible",
-            "circle_present",
-            "confidence"
-        ],
-        "additionalProperties": False
-    }
+    prompt = """
+あなたは日本の契約書の「記入漏れチェック」を行います。
 
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "employment_circle_check",
-            "strict": True,
-            "schema": {
-                "type": "object",
-                "properties": {
+今回確認する項目は1つだけです。
 
-                    "regular": choice,
-                    "dispatch": choice,
-                    "contract": choice,
-                    "parttime": choice,
-                    "other": choice,
+【確認対象】
+「ご住所」に対応するフリガナ記入欄
 
-                    "dispatch_company_visible": {
-                        "type": "boolean"
-                    },
+重要：
+この判定では、フリガナの内容を読み取る必要はありません。
 
-                    "dispatch_company_has_entry": {
-                        "type": "boolean"
-                    },
+確認したいのは、
 
-                    "dispatch_company_uncertain": {
-                        "type": "boolean"
-                    }
+「ご住所に対応するフリガナ欄に、
+手書きの文字が存在するか」
+
+だけです。
+
+
+【必ず守るルール】
+
+1.
+まず契約書内の「ご住所」という印字を探してください。
+
+2.
+その「ご住所」に対応している
+住所用のフリガナ記入欄だけを確認してください。
+
+3.
+フリガナ欄に手書き文字が明確に存在すれば
+has_entry = true
+
+4.
+対象のフリガナ欄が見えていて、
+何も記入されていなければ
+has_entry = false
+
+5.
+写真が遠い、ぼやけている、対象欄が写っていないなど、
+対象のフリガナ欄そのものを確認できない場合は
+uncertain = true
+
+6.
+フリガナが正しいかどうかは確認しません。
+
+7.
+住所との読みが一致しているかも確認しません。
+
+8.
+氏名のフリガナは絶対に使わないでください。
+
+9.
+住所本文に文字が書かれていても、
+フリガナ欄が空欄なら has_entry = false です。
+
+10.
+近くにある別の手書き文字を、
+フリガナの記入として扱わないでください。
+
+11.
+印刷されている文字は「記入あり」に含めません。
+手書きで記入された文字だけを確認してください。
+
+12.
+画像が横向き・縦向き・上下逆でも、
+書類の向きを理解して判定してください。
+
+13.
+複数画像がある場合は、
+同じ契約書の全体写真やアップ写真として扱い、
+最も確認しやすい画像を使ってください。
+
+推測は禁止です。
+
+対象欄を確認できなければ、
+無理に「記入あり」「未記入」とせず
+uncertain = true にしてください。
+"""
+
+    schema = {
+        "name": "address_furigana_check",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "visible": {
+                    "type": "boolean"
                 },
-                "required": [
-                    "regular",
-                    "dispatch",
-                    "contract",
-                    "parttime",
-                    "other",
-                    "dispatch_company_visible",
-                    "dispatch_company_has_entry",
-                    "dispatch_company_uncertain"
-                ],
-                "additionalProperties": False
-            }
+                "has_entry": {
+                    "type": "boolean"
+                },
+                "uncertain": {
+                    "type": "boolean"
+                }
+            },
+            "required": [
+                "visible",
+                "has_entry",
+                "uncertain"
+            ],
+            "additionalProperties": False
         }
     }
 
+    content = [
+        {
+            "type": "text",
+            "text": prompt
+        }
+    ]
 
-# =========================================================
-# AI判定
-# =========================================================
+    for img in images:
 
-def check_employment(img):
-
-    prompt = """
-これは日本語のクレジット申込書です。
-
-今回の目的は文字をOCRすることではありません。
-
-「雇用形態」の各選択肢のどこに
-手書きの○が付いているかを、
-位置関係から判定してください。
-
-
-【最重要】
-
-まず画像内から印刷された
-
-「雇用形態」
-
-という見出しを探してください。
-
-その雇用形態欄の中だけを判定します。
-
-
-次に以下の各選択肢を
-それぞれ独立して確認してください。
-
-regular
-= 正社員
-
-dispatch
-= 派遣社員
-
-contract
-= 契約社員
-
-parttime
-= パート・アルバイト
-
-other
-= その他
-
-
-それぞれについて、
-
-label_visible
-= その印刷された選択肢を確認できるか
-
-circle_present
-= その選択肢の文字または選択位置に、
-  実際の手書き○・囲みが重なっているか
-
-を判定してください。
-
-
-==================================================
-非常に重要
-==================================================
-
-「どの雇用形態だと思うか」を推測してはいけません。
-
-5個の選択肢を1個ずつ別々に見てください。
-
-
-例えば、
-
-正社員       ○なし
-派遣社員     ○あり
-契約社員     ○なし
-
-なら、
-
-regular.circle_present=false
-dispatch.circle_present=true
-contract.circle_present=false
-
-です。
-
-
-○の中心位置が
-どの印刷文字・選択位置に最も対応しているかを
-よく確認してください。
-
-
-隣の選択肢に○をずらして判定しないでください。
-
-特に
-
-「派遣社員」
-と
-「契約社員」
-
-は隣接しているため、
-必ず別々に確認してください。
-
-
-印刷されている文字そのもの、
-文字を囲む表の罫線、
-印刷された丸印、
-
-これらは手書き○ではありません。
-
-
-画像が横向き・縦向き・90度回転していても、
-書類を正しい向きに頭の中で回転させて確認してください。
-
-
-==================================================
-派遣先・出向先
-==================================================
-
-さらに、
-
-「派遣先・出向先」
-
-と印刷された会社名欄を探してください。
-
-dispatch_company_visible
-= その指定欄が画像で確認できるか
-
-dispatch_company_has_entry
-= その指定欄そのものに手書き記入があるか
-
-dispatch_company_uncertain
-= 見えているが本当に判定できない場合のみtrue
-
-
-勤務先の「会社名」など、
-別の会社名を派遣先として使用してはいけません。
-
-
-個人名や会社名などの内容そのものを
-返す必要はありません。
-"""
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": image_to_data_url(img),
+                    "detail": "high"
+                }
+            }
+        )
 
     response = client.chat.completions.create(
         model=MODEL,
         messages=[
             {
                 "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": prompt
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": image_to_data_url(img),
-                            "detail": "high"
-                        }
-                    }
-                ]
+                "content": content
             }
         ],
-        response_format=schema()
+        response_format={
+            "type": "json_schema",
+            "json_schema": schema
+        }
     )
 
     return json.loads(
@@ -282,202 +226,95 @@ dispatch_company_uncertain
     )
 
 
-# =========================================================
-# UI
-# =========================================================
+# ==========================================
+# 画面
+# ==========================================
 
-uploaded = st.file_uploader(
-    "クレジット申込書の写真",
-    type=[
-        "jpg",
-        "jpeg",
-        "png"
-    ]
+uploaded_files = st.file_uploader(
+    "契約書の写真を選択",
+    type=["jpg", "jpeg", "png"],
+    accept_multiple_files=True
 )
 
 
-if uploaded:
+if uploaded_files:
 
-    img = Image.open(uploaded)
+    images = []
 
-    img = ImageOps.exif_transpose(img).convert("RGB")
+    for file in uploaded_files:
 
-    # 大きすぎる画像だけ縮小
-    if max(img.size) > 3200:
+        img = Image.open(file)
 
-        scale = 3200 / max(img.size)
+        img = prepare_image(img)
 
-        img = img.resize(
-            (
-                int(img.width * scale),
-                int(img.height * scale)
-            ),
-            Image.Resampling.LANCZOS
+        images.append(img)
+
+    st.subheader("テスト画像")
+
+    for img in images:
+
+        st.image(
+            img,
+            use_container_width=True
         )
-
-    st.image(
-        img,
-        caption="テスト画像",
-        use_container_width=True
-    )
 
 
     if st.button(
-        "雇用形態を判定",
+        "住所フリガナを判定",
         type="primary",
         use_container_width=True
     ):
 
-        try:
+        with st.spinner("判定中..."):
 
-            with st.spinner(
-                "○の位置を確認しています…"
-            ):
+            try:
 
-                data = check_employment(img)
-
-
-            choices = [
-                ("regular", "正社員"),
-                ("dispatch", "派遣社員"),
-                ("contract", "契約社員"),
-                ("parttime", "パート・アルバイト"),
-                ("other", "その他")
-            ]
-
-
-            selected = []
-
-            for key, label in choices:
-
-                value = data[key]
-
-                if (
-                    value["label_visible"]
-                    and
-                    value["circle_present"]
-                ):
-
-                    selected.append(label)
-
-
-            st.divider()
-
-
-            # =============================================
-            # 最終判定はPython
-            # =============================================
-
-            if len(selected) == 1:
-
-                employment = selected[0]
-
-                st.success(
-                    f"✅ 雇用形態：{employment}"
+                result = check_address_furigana(
+                    images
                 )
 
-
-                # 派遣社員だけ追加チェック
-                if employment == "派遣社員":
-
-                    if not data[
-                        "dispatch_company_visible"
-                    ]:
-
-                        st.warning(
-                            "🔍 派遣先・出向先："
-                            "欄を確認できません"
-                        )
-
-                    elif data[
-                        "dispatch_company_uncertain"
-                    ]:
-
-                        st.warning(
-                            "🔍 派遣先・出向先："
-                            "判定できません"
-                        )
-
-                    elif data[
-                        "dispatch_company_has_entry"
-                    ]:
-
-                        st.success(
-                            "✅ 派遣先・出向先：記入あり"
-                        )
-
-                    else:
-
-                        st.error(
-                            "❌ 派遣先・出向先：空欄"
-                        )
-
-                else:
-
-                    st.info(
-                        "派遣先・出向先：対象外"
-                    )
-
-
-            elif len(selected) == 0:
-
-                st.warning(
-                    "🔍 雇用形態：○を特定できません"
-                )
-
-
-            else:
+            except Exception as e:
 
                 st.error(
-                    "⚠️ 雇用形態：複数の○を検出しました"
+                    f"判定中にエラーが発生しました：{e}"
                 )
 
-                st.write(
-                    "検出："
-                    + " / ".join(selected)
-                )
+                st.stop()
 
 
-            # =============================================
-            # 判定データ
-            # =============================================
-
-            with st.expander(
-                "判定データ"
-            ):
-
-                for key, label in choices:
-
-                    value = data[key]
-
-                    st.write(
-                        f"**{label}**"
-                    )
-
-                    st.write(
-                        "文字位置を確認：",
-                        value["label_visible"]
-                    )
-
-                    st.write(
-                        "○あり：",
-                        value["circle_present"]
-                    )
-
-                    st.write(
-                        "確信度：",
-                        value["confidence"]
-                    )
-
-                    st.divider()
+        st.divider()
 
 
-        except Exception as e:
+        # ==================================
+        # 結果表示
+        # ==================================
+
+        if result["uncertain"] or not result["visible"]:
+
+            st.warning(
+                "🔍 ご住所フリガナ：判定できません"
+            )
+
+            st.caption(
+                "ご住所のフリガナ欄がはっきり写るように、"
+                "少し近づいて撮影してください。"
+            )
+
+
+        elif result["has_entry"]:
+
+            st.success(
+                "✅ ご住所フリガナ：記入あり"
+            )
+
+
+        else:
 
             st.error(
-                "AI判定中にエラーが発生しました。"
+                "❌ ご住所フリガナ：未記入"
             )
 
-            st.code(
-                str(e)
-            )
+
+        with st.expander("判定データ"):
+
+            st.json(result)

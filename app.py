@@ -61,21 +61,17 @@ class CircleCheck(BaseModel):
 
 
 # ============================================================
-# ★ 勤務年数専用
+# 勤務年数専用
 # ============================================================
 
 class WorkYearsCheck(BaseModel):
     field_located: bool
 
-    # 「年」の直前に数字が書かれているか
     year_has_entry: bool
+    year_value: int | None = None
 
-    # 「ヶ月」の直前に数字が書かれているか
-    month_has_entry: bool
-
-    # 読み取れた具体的な数字
-    years: int | None = None
-    months: int | None = None
+    months_has_entry: bool
+    months_value: int | None = None
 
     uncertain: bool = False
 
@@ -132,7 +128,9 @@ class WorkResult(BaseModel):
     company_address: FieldCheck
     company_postal_code: FieldCheck
     company_phone: FieldCheck
+    years_employed: FieldCheck
     payday: FieldCheck
+
     dispatch_destination: FieldCheck
 
 
@@ -154,6 +152,7 @@ class HouseholdResult(BaseModel):
 
     monthly_credit_field_located: bool
     monthly_credit_has_entry: bool
+
     monthly_credit_yen: int | None = None
 
     uncertain: bool
@@ -175,6 +174,7 @@ class RelationResult(BaseModel):
     contact: FieldCheck
     annual_income: FieldCheck
     employment_type: CircleCheck
+    years_employed: FieldCheck
     payday: FieldCheck
     company_name: FieldCheck
     company_location: FieldCheck
@@ -332,7 +332,7 @@ COMMON = """
 
 【存在チェック】
 
-氏名、フリガナ、会社名などは、
+氏名、フリガナ、会社名、勤務年数などは、
 原則として指定欄に手書き記入が存在すればOKです。
 
 フリガナについて、
@@ -353,9 +353,8 @@ COMMON = """
 
 ・住所の都道府県
 ・月額クレジット支払額10万円
-・勤務年数の年・ヶ月
-・週1回90分
 ・数量一致
+・週1回90分
 ・公・国・私
 ・その他この指示で明示されたもの
 
@@ -384,11 +383,11 @@ F：契約関連情報
 
 【勤務先ブロック】
 
-雇用形態・業種・会社名・勤務年数等は
+雇用形態・業種・会社名等は
 Bの勤務先ブロックにあります。
 
-本人情報や関係者情報にある文字・数字・○を
-勤務先のものとして扱ってはいけません。
+本人情報や関係者情報にある○を
+勤務先の○として扱ってはいけません。
 
 
 【雇用形態の印刷順】
@@ -426,56 +425,11 @@ Bの勤務先ブロックにあります。
 必須になります。
 
 
-【勤務年数】
-
-勤務年数には
-印刷された「年」と「ヶ月」があります。
-
-必ず対象となる勤務年数欄そのものを特定し、
-
-「年」の直前に書かれた数字と、
-「ヶ月」の直前に書かれた数字を、
-
-別々に確認してください。
-
-例：
-
-2年4ヶ月
-→ years=2
-→ months=4
-→ year_has_entry=true
-→ month_has_entry=true
-
-2年0ヶ月
-→ years=2
-→ months=0
-→ 両方記入あり
-
-0年6ヶ月
-→ years=0
-→ months=6
-→ 両方記入あり
-
-2年（ヶ月側が空欄）
-→ year_has_entry=true
-→ month_has_entry=false
-
-6ヶ月（年側が空欄）
-→ year_has_entry=false
-→ month_has_entry=true
-
-空欄
-→ 両方false
-
-別の年数、年齢、日付、金額などを
-勤務年数として使用してはいけません。
-
-
 【世帯状況】
 
 「世帯主の年収(税込)」と
 「世帯主のクレジットの月あたりのお支払額」は
-完全に別の項目です。
+別の項目です。
 
 絶対に混同しないでください。
 
@@ -489,7 +443,7 @@ Bの勤務先ブロックにあります。
 
 Dブロックは本人情報とは別です。
 
-本人の住所、電話番号、勤務先、勤務年数などを
+本人の住所、電話番号、勤務先などを
 関係者情報として流用してはいけません。
 
 
@@ -641,48 +595,69 @@ def show_work_years(label, result):
         st.warning(f"🔍 {label}：要確認")
         return
 
-    if not result.year_has_entry and not result.month_has_entry:
-        st.error(f"❌ {label}：未記入")
+    if (
+        not result.year_has_entry
+        and not result.months_has_entry
+    ):
+        st.error(
+            f"❌ {label}：年・ヶ月とも未記入"
+        )
         return
 
     if not result.year_has_entry:
-        if result.months is not None:
+
+        if result.months_value is not None:
             st.error(
-                f"❌ {label}：年が未記入 "
-                f"（ヶ月：{result.months}ヶ月）"
+                f"❌ {label}：年が未記入"
+                f"（ヶ月：{result.months_value}ヶ月）"
             )
         else:
-            st.error(f"❌ {label}：年が未記入")
+            st.error(
+                f"❌ {label}：年が未記入"
+            )
+
         return
 
-    if not result.month_has_entry:
-        if result.years is not None:
+    if not result.months_has_entry:
+
+        if result.year_value is not None:
             st.error(
-                f"❌ {label}：ヶ月が未記入 "
-                f"（年：{result.years}年）"
+                f"❌ {label}：ヶ月が未記入"
+                f"（年：{result.year_value}年）"
             )
         else:
-            st.error(f"❌ {label}：ヶ月が未記入")
+            st.error(
+                f"❌ {label}：ヶ月が未記入"
+            )
+
         return
 
-    if result.years is None or result.months is None:
+    if (
+        result.year_value is None
+        or result.months_value is None
+    ):
         st.warning(
-            f"🔍 {label}：年・ヶ月の記入はありますが、"
+            f"🔍 {label}："
             "数字を正確に読み取れません"
         )
         return
 
-    if result.months < 0 or result.months > 11:
+    if (
+        result.months_value < 0
+        or result.months_value > 11
+    ):
         st.warning(
             f"🔍 {label}："
-            f"{result.years}年{result.months}ヶ月 "
-            "（ヶ月の値を要確認）"
+            f"{result.year_value}年"
+            f"{result.months_value}ヶ月 "
+            "（ヶ月の値を確認してください）"
         )
         return
 
     st.success(
         f"✅ {label}："
-        f"{result.years}年{result.months}ヶ月"
+        f"{result.year_value}年"
+        f"{result.months_value}ヶ月"
     )
 
 
@@ -740,6 +715,7 @@ page2_file = st.file_uploader(
 
 
 if page1_file:
+
     p1_image = Image.open(page1_file)
 
     st.image(
@@ -750,6 +726,7 @@ if page1_file:
 
 
 if page2_file:
+
     p2_image = Image.open(page2_file)
 
     st.image(
@@ -910,7 +887,7 @@ A：ご契約者本人情報だけを確認してください。
 
 
         # ----------------------------------------------------
-        # 本人住所の都道府県
+        # 都道府県
         # ----------------------------------------------------
 
         with st.spinner(
@@ -955,21 +932,25 @@ A：ご契約者本人情報だけを確認してください。
         if address_rule:
 
             if address_rule.uncertain:
+
                 st.warning(
                     "🔍 住所の都道府県：要確認"
                 )
 
             elif not address_rule.has_entry:
+
                 st.error(
                     "❌ ご住所：未記入"
                 )
 
             elif address_rule.prefecture_explicit:
+
                 st.success(
                     "✅ ご住所：都道府県から記入"
                 )
 
             else:
+
                 st.error(
                     "❌ ご住所：都道府県名から記入してください"
                 )
@@ -1103,7 +1084,7 @@ trueにしてください。
 
 
         # ----------------------------------------------------
-        # 勤務先基本情報
+        # 勤務先情報
         # ----------------------------------------------------
 
         with st.spinner(
@@ -1126,14 +1107,12 @@ trueにしてください。
 ・所在地
 ・所在地の郵便番号
 ・所在地の電話番号
+・勤務年数
 ・給料日
 ・派遣先・出向先の会社名
 
 それぞれ指定欄に
 記入が存在するかだけ確認してください。
-
-勤務年数は今回の判定対象に含めないでください。
-勤務年数は別の専用判定で確認します。
 
 派遣先・出向先については、
 指定された欄そのものだけを確認してください。
@@ -1165,6 +1144,11 @@ trueにしてください。
             )
 
             show_field(
+                "勤務年数・記入",
+                work.years_employed
+            )
+
+            show_field(
                 "給料日",
                 work.payday
             )
@@ -1184,11 +1168,11 @@ trueにしてください。
 
 
         # ----------------------------------------------------
-        # ★ ご契約者の勤務年数
+        # ★ 本人の勤務年数「年・ヶ月」専用判定
         # ----------------------------------------------------
 
         with st.spinner(
-            "① 勤務年数を確認中..."
+            "① 勤務年数の年・ヶ月を確認中..."
         ):
 
             applicant_work_years = safe_analysis(
@@ -1197,71 +1181,100 @@ trueにしてください。
                 COMMON
                 + PAGE1_STRUCTURE
                 + """
-【今回確認する項目は1つだけです】
+【今回の対象は1つだけ】
 
-ご契約者本人の勤務先情報にある
+ご契約者本人の勤務先ブロックにある
 「勤務年数」欄だけを確認してください。
 
 関係者情報の勤務年数ではありません。
 
-まず印刷された「勤務年数」を特定してください。
+まず、
+ご契約者勤務先ブロックの
+印刷された「勤務年数」ラベルを
+確実に特定してください。
 
-その勤務年数欄には、
-数字を書き込む場所と
-印刷された
+その欄に印刷されている
 
 「年」
 「ヶ月」
 
-があります。
+を基準にします。
 
-必ず、
 
-「年」の直前に手書き数字があるか
+【判定方法】
 
-「ヶ月」の直前に手書き数字があるか
+「年」の直前の記入スペースに
+手書き数字が存在するか。
 
-を別々に確認してください。
+「ヶ月」の直前の記入スペースに
+手書き数字が存在するか。
+
+を別々に判定してください。
+
 
 例：
 
 2年4ヶ月
-→ year_has_entry=true
-→ years=2
-→ month_has_entry=true
-→ months=4
+
+year_has_entry=true
+year_value=2
+
+months_has_entry=true
+months_value=4
+
 
 2年0ヶ月
-→ years=2
-→ months=0
-→ 両方true
+
+year_has_entry=true
+year_value=2
+
+months_has_entry=true
+months_value=0
+
 
 0年6ヶ月
-→ years=0
-→ months=6
-→ 両方true
+
+year_has_entry=true
+year_value=0
+
+months_has_entry=true
+months_value=6
+
 
 2年　ヶ月
-→ year_has_entry=true
-→ years=2
-→ month_has_entry=false
+
+year_has_entry=true
+year_value=2
+
+months_has_entry=false
+months_value=null
+
 
 年　6ヶ月
-→ year_has_entry=false
-→ month_has_entry=true
-→ months=6
 
-年　ヶ月
-→ 両方false
+year_has_entry=false
+year_value=null
 
-0は「未記入」ではありません。
-実際に0と書いてあれば記入ありです。
+months_has_entry=true
+months_value=6
 
-別の欄にある
-生年月日、年齢、日付、年収、金額、
-関係者の勤務年数等を使用してはいけません。
 
-対象欄を確実に特定できない場合は
+【絶対禁止】
+
+・生年月日の年や月
+・契約年月日
+・年収
+・給料日
+・関係者情報の勤務年数
+・その他の数字
+
+を使用してはいけません。
+
+実際に「0」と書いてあれば、
+0も記入ありです。
+
+対象の勤務年数欄を
+確実に特定できない場合は
 uncertain=true。
 """,
                 WorkYearsCheck
@@ -1269,6 +1282,7 @@ uncertain=true。
 
 
         if applicant_work_years:
+
             show_work_years(
                 "勤務年数",
                 applicant_work_years
@@ -1334,7 +1348,7 @@ circle_present=true。
 
 
         # ----------------------------------------------------
-        # 世帯状況・月当たりクレジット
+        # 世帯状況
         # ----------------------------------------------------
 
         with st.spinner(
@@ -1361,44 +1375,16 @@ C：世帯主・世帯状況ブロック。
 
 という正確な欄を探してください。
 
-この欄そのものに記載されている金額だけを
+その欄に金額があれば
+円換算した整数を
 monthly_credit_yen にしてください。
 
-金額が「万円」で書かれている場合は、
-円に換算してください。
+絶対に
+「世帯主の年収(税込)」
+を使用しないでください。
 
-例：
-
-5万円
-→ 50000
-
-10万円
-→ 100000
-
-12万円
-→ 120000
-
-
-【非常に重要】
-
-「世帯主の年収(税込)」は
-まったく別の欄です。
-
-年収欄に
-
-400万円
-500万円
-600万円
-
-などと書かれていても、
-絶対にmonthly_credit_yenに
-使用してはいけません。
-
-月当たりのお支払額の欄が空欄なら、
-monthly_credit_has_entry=false。
-
-月額欄の位置を確実に特定できない場合は、
-推測せずuncertain=true。
+月額欄を確実に特定できない場合は
+uncertain=true。
 
 右側の「連絡先」は
 空欄でも問題ありません。
@@ -1504,14 +1490,12 @@ D：関係者情報ブロックだけ。
 連絡先
 税込年収
 雇用形態
+勤務年数
 給料日
 会社名
 所在地
 所在地の郵便番号
 所在地の電話番号
-
-勤務年数は今回の判定対象に含めないでください。
-勤務年数は別の専用判定で確認します。
 
 住所は実住所でも
 「同上」でも記入ありとしてOKです。
@@ -1583,6 +1567,11 @@ D：関係者情報ブロックだけ。
                 )
 
                 show_field(
+                    "関係者情報・勤務年数・記入",
+                    relation.years_employed
+                )
+
+                show_field(
                     "関係者情報・給料日",
                     relation.payday
                 )
@@ -1609,11 +1598,11 @@ D：関係者情報ブロックだけ。
 
 
             # ------------------------------------------------
-            # ★ 関係者情報の勤務年数
+            # ★ 関係者の勤務年数専用判定
             # ------------------------------------------------
 
             with st.spinner(
-                "① 関係者情報の勤務年数を確認中..."
+                "① 関係者の勤務年数を確認中..."
             ):
 
                 relation_work_years = safe_analysis(
@@ -1622,56 +1611,85 @@ D：関係者情報ブロックだけ。
                     COMMON
                     + PAGE1_STRUCTURE
                     + """
-【今回確認する項目は1つだけです】
+【今回の対象は1つだけ】
 
 D：関係者情報ブロック内にある
 「勤務年数」欄だけを確認してください。
 
 ご契約者本人の勤務年数ではありません。
 
-関係者情報ブロックを特定してから、
-その中の印刷された「勤務年数」を探してください。
+まず関係者情報ブロックを特定し、
+その中にある
+印刷された「勤務年数」を
+確実に特定してください。
 
 その欄の
 
-「年」の直前の数字
+「年」の直前にある手書き数字
 
-「ヶ月」の直前の数字
+「ヶ月」の直前にある手書き数字
 
-だけを確認してください。
+だけを読み取ってください。
+
 
 例：
 
 3年8ヶ月
-→ year_has_entry=true
-→ years=3
-→ month_has_entry=true
-→ months=8
+
+year_has_entry=true
+year_value=3
+
+months_has_entry=true
+months_value=8
+
 
 3年0ヶ月
-→ 両方記入あり
+
+year_has_entry=true
+year_value=3
+
+months_has_entry=true
+months_value=0
+
 
 0年8ヶ月
-→ 両方記入あり
 
-3年のみ
-→ month_has_entry=false
+year_has_entry=true
+year_value=0
 
-8ヶ月のみ
-→ year_has_entry=false
+months_has_entry=true
+months_value=8
 
-空欄
-→ 両方false
 
-0は実際に書かれていれば
-記入ありとして扱います。
+3年　ヶ月
 
-本人勤務先の勤務年数、
-生年月日、年齢、日付、年収などを
-流用してはいけません。
+year_has_entry=true
+year_value=3
 
-関係者情報内の勤務年数欄を
-確実に特定できない場合は
+months_has_entry=false
+months_value=null
+
+
+年　8ヶ月
+
+year_has_entry=false
+year_value=null
+
+months_has_entry=true
+months_value=8
+
+
+【絶対禁止】
+
+・ご契約者本人の勤務年数
+・生年月日
+・年収
+・給料日
+・その他の日付や数字
+
+を使用してはいけません。
+
+対象欄を確実に特定できない場合は
 uncertain=true。
 """,
                     WorkYearsCheck
@@ -2399,7 +2417,6 @@ uncertain=true。
                         row.horizontal_values
                     )
 
-
                     if (
                         not row.quantity_box_has_handwriting
                         or row.written_quantity.strip() == ""
@@ -2411,7 +2428,6 @@ uncertain=true。
                         )
 
                         continue
-
 
                     try:
 
@@ -2430,8 +2446,6 @@ uncertain=true。
 
                         continue
 
-
-                    # 金額列の誤読防止
                     if written >= 1000:
 
                         st.warning(
@@ -2441,7 +2455,6 @@ uncertain=true。
                         )
 
                         continue
-
 
                     if written == expected:
 

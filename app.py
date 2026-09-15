@@ -19,11 +19,12 @@ st.set_page_config(
 )
 
 st.title("📄 契約書チェック")
-st.caption("提出前の記入漏れ・選択漏れをAIで確認します。")
+st.caption("契約書を提出する前の記入漏れ・選択漏れチェック")
 
 st.info(
-    "このアプリは提出前チェックの補助ツールです。"
-    "最終確認は必ず人が行ってください。"
+    "AIによる提出前チェックです。"
+    "記載内容そのものの事実確認ではなく、"
+    "必要欄への記入・選択の有無を中心に確認します。"
 )
 
 
@@ -36,7 +37,7 @@ try:
         api_key=st.secrets["GEMINI_API_KEY"]
     )
 except Exception as e:
-    st.error("Gemini APIの設定エラーです。")
+    st.error("Gemini APIの設定を確認してください。")
     st.code(str(e))
     st.stop()
 
@@ -45,7 +46,7 @@ MODEL = "gemini-3.1-pro-preview"
 
 
 # ============================================================
-# 共通データ型
+# 共通Schema
 # ============================================================
 
 class FieldCheck(BaseModel):
@@ -61,23 +62,7 @@ class CircleCheck(BaseModel):
 
 
 # ============================================================
-# 勤務年数
-# ============================================================
-
-class WorkYearsCheck(BaseModel):
-    field_located: bool
-
-    year_has_entry: bool
-    year_value: Optional[int] = None
-
-    months_has_entry: bool
-    months_value: Optional[int] = None
-
-    uncertain: bool = False
-
-
-# ============================================================
-# 1枚目：契約者
+# PAGE1 本人
 # ============================================================
 
 class ApplicantResult(BaseModel):
@@ -103,11 +88,15 @@ class AddressRuleResult(BaseModel):
 
 
 # ============================================================
-# 1枚目：勤務先
+# PAGE1 本人雇用形態
 # ============================================================
 
-class EmploymentResult(BaseModel):
+class ApplicantEmploymentResult(BaseModel):
+
     field_located: bool
+
+    # まず「○自体があるか」を独立判定
+    circle_visible: bool
 
     regular_employee: bool
     dispatch_employee: bool
@@ -123,44 +112,76 @@ class EmploymentResult(BaseModel):
     uncertain: bool
 
 
+# ============================================================
+# PAGE1 勤務年数
+# ============================================================
+
+class WorkYearsResult(BaseModel):
+
+    field_located: bool
+
+    year_position_located: bool
+    year_handwriting_visible: bool
+    year_value: Optional[int] = None
+
+    months_position_located: bool
+
+    # 「0」を空欄扱いさせないため、
+    # 筆跡の存在と数字認識を分離
+    months_handwriting_visible: bool
+    months_zero_visible: bool
+    months_value: Optional[int] = None
+
+    uncertain: bool
+
+
+# ============================================================
+# PAGE1 勤務先
+# ============================================================
+
 class WorkResult(BaseModel):
     company_name: FieldCheck
     company_address: FieldCheck
     company_postal_code: FieldCheck
     company_phone: FieldCheck
-    years_employed: FieldCheck
     payday: FieldCheck
     dispatch_destination: FieldCheck
 
 
 class IndustryResult(BaseModel):
     field_located: bool
-    circle_present: bool
+    circle_visible: bool
     uncertain: bool
 
 
 # ============================================================
-# 1枚目：世帯
+# PAGE1 世帯
 # ============================================================
 
-class HouseholdResult(BaseModel):
+class HouseholdBasicResult(BaseModel):
     field_located: bool
+    required_entries_present: bool
+    required_selections_present: bool
+    uncertain: bool
 
-    household_required_entries_present: bool
-    household_required_selections_present: bool
 
-    monthly_credit_field_located: bool
-    monthly_credit_has_entry: bool
-    monthly_credit_yen: Optional[int] = None
+class MonthlyCreditResult(BaseModel):
+
+    exact_field_located: bool
+
+    handwriting_visible: bool
+
+    amount_readable: bool
+    amount_yen: Optional[int] = None
 
     uncertain: bool
 
 
 # ============================================================
-# 1枚目：関係者情報
+# PAGE1 関係者
 # ============================================================
 
-class RelationResult(BaseModel):
+class RelationBasicResult(BaseModel):
     name: FieldCheck
     name_furigana: FieldCheck
     gender: CircleCheck
@@ -171,7 +192,6 @@ class RelationResult(BaseModel):
     residence: CircleCheck
     contact: FieldCheck
     annual_income: FieldCheck
-    employment_type: CircleCheck
     years_employed: FieldCheck
     payday: FieldCheck
     company_name: FieldCheck
@@ -180,25 +200,40 @@ class RelationResult(BaseModel):
     company_phone: FieldCheck
 
 
+class RelationEmploymentResult(BaseModel):
+
+    field_located: bool
+
+    # ここも「何が選択されたか」より先に
+    # ○そのものの存在を独立判定
+    circle_visible: bool
+
+    uncertain: bool
+
+
 # ============================================================
-# 1枚目：銀行・契約
+# PAGE1 銀行
 # ============================================================
 
 class BankResult(BaseModel):
-    bank_section_located: bool
-    japan_post_side_has_entry: bool
-    other_bank_side_has_entry: bool
+    section_located: bool
+    japan_post_has_entry: bool
+    other_bank_has_entry: bool
     account_holder_furigana: FieldCheck
     uncertain: bool
 
 
-class ContractInfoResult(BaseModel):
+# ============================================================
+# PAGE1 契約情報
+# ============================================================
+
+class ContractResult(BaseModel):
     service_period: FieldCheck
     article42_receipt_date: FieldCheck
 
 
 # ============================================================
-# 2枚目
+# PAGE2
 # ============================================================
 
 class GuardianResult(BaseModel):
@@ -206,33 +241,33 @@ class GuardianResult(BaseModel):
 
 
 class Page2AddressResult(BaseModel):
-    address_field_located: bool
-    address_has_entry: bool
-    prefecture_name_explicit: bool
-    prefecture_mark_field_located: bool
-    correct_prefecture_mark_circled: bool
+    field_located: bool
+    has_entry: bool
+    prefecture_explicit: bool
+    prefecture_selector_located: bool
+    appropriate_prefecture_circle: bool
     uncertain: bool
 
 
 class TargetAResult(BaseModel):
     field_located: bool
-    yes_circled: bool
+    yes_circle_visible: bool
     uncertain: bool
 
 
-class SchoolCategoryResult(BaseModel):
+class SchoolResult(BaseModel):
     field_located: bool
-    public_circled: bool
-    national_circled: bool
-    private_circled: bool
+    public_circle: bool
+    national_circle: bool
+    private_circle: bool
     uncertain: bool
 
 
 class CourseResult(BaseModel):
     field_located: bool
     has_entry: bool
-    weekly_once_present: bool
-    ninety_minutes_present: bool
+    weekly_once: bool
+    ninety_minutes: bool
     uncertain: bool
 
 
@@ -243,7 +278,7 @@ class Page2DatesResult(BaseModel):
 
 class ReceiptResult(BaseModel):
     field_located: bool
-    has_signature: bool
+    signature_visible: bool
     uncertain: bool
 
 
@@ -253,258 +288,325 @@ class ReceiptResult(BaseModel):
 
 class QuantityRow(BaseModel):
     row_label: str
-    horizontal_values: List[int] = Field(default_factory=list)
-    written_quantity: str = ""
-    quantity_box_has_handwriting: bool = False
+
+    horizontal_values: List[int] = Field(
+        default_factory=list
+    )
+
+    quantity_cell_located: bool
+
+    quantity_handwriting_visible: bool
+
+    written_quantity: Optional[int] = None
+
+    uncertain: bool = False
 
 
 class QuantityResult(BaseModel):
     table_located: bool
-    applicable_rows_detected: bool
+    applicable_rows_visible: bool
     rows: List[QuantityRow] = Field(default_factory=list)
     uncertain: bool
 
 
 # ============================================================
-# 共通プロンプト
+# 共通思想
 # ============================================================
 
 COMMON = """
-あなたは日本の契約書の
-「提出前記入漏れチェック」を行います。
+あなたは日本の契約書を提出する前に、
+記入漏れ・選択漏れを確認する
+視覚チェック担当です。
 
-このアプリは契約内容が事実として正しいかを
-審査するものではありません。
+この仕事で最も重要なのは、
 
-原則として確認するのは、
+「書類の別の場所にある文字・数字・○を
+対象欄のものとして誤認しないこと」
 
-・指定欄に記入があるか
-・指定選択肢に手書きの○があるか
-・明示された特別ルールを満たすか
-
-だけです。
+です。
 
 
-【絶対ルール】
+━━━━━━━━━━━━━━━━━━━━━━
 
-別の欄にある文字・数字・○を、
-対象欄のものとして流用してはいけません。
+【基本原則】
 
-対象欄を特定するときは、
+内容が事実として正しいかを
+審査する仕事ではありません。
 
-1. 書類全体
-2. 大きなブロック
-3. 上下左右の隣接ブロック
-4. 印刷された対象ラベル
-5. 同じ行・同じ欄の位置関係
-6. その欄の手書き記入
+原則として、
 
-の順番で確認してください。
+・指定欄に手書き記入が存在するか
+・指定された選択欄に手書き○が存在するか
 
-対象欄の位置を確定できなければ、
-推測してOKにしてはいけません。
-
-その場合は uncertain=true にしてください。
+を確認します。
 
 
-【存在チェック】
-
-氏名、フリガナ、会社名などは、
-原則として指定欄に手書き記入が存在すればOKです。
-
-フリガナについて、
-氏名との読み方の一致を審査しません。
-
-会社名について、
-実在性や正式名称の正しさを審査しません。
-
-
-【○チェック】
-
-選択式項目は文字認識だけで判断せず、
-指定された印刷文字の上または周囲に
-実際の手書き○が存在するか確認してください。
-
-
-【内容まで確認する特別項目】
+ただし次の項目だけは
+内容まで確認します。
 
 ・住所の都道府県
-・月額クレジット支払額10万円
-・勤務年数の年とヶ月
-・数量一致
-・週1回90分
-・公・国・私
+・勤務年数の年／ヶ月
+・月あたりクレジット支払額
+・週1 90分
+・数量
+・公／国／私
 
-これらは内容まで確認します。
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+【対象欄を探す順序】
+
+絶対に、
+
+文字や数字を先に探してから
+項目を推測してはいけません。
+
+必ず、
+
+1. 書類全体を確認
+2. 対象となる大ブロックを確認
+3. 印刷された項目名を確認
+4. 項目名に直接対応する記入領域を確認
+5. その領域内の手書き筆跡を確認
+6. 必要な場合だけ内容を読む
+
+の順番で判断してください。
+
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+【重要】
+
+手書きが薄い、
+○が文字と重なっている、
+数字が小さい、
+
+という理由だけで
+「未記入」と判断してはいけません。
+
+手書き筆跡の存在が見えるが
+内容だけ判別できない場合は、
+
+uncertain=true
+
+にしてください。
+
+
+逆に、
+
+対象欄を確実に特定できない場合も
+推測せず uncertain=true にしてください。
+
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+【フリガナ】
+
+指定されたフリガナ欄に
+手書き文字が存在すればOKです。
+
+氏名との読みの一致は確認不要です。
+
+
+【会社名】
+
+指定欄に記入があればOKです。
+
+実在性や正式名称は確認不要です。
+
+
+【選択欄】
+
+○の中の文字をOCRするだけではなく、
+
+・印刷された選択肢
+・選択肢の並び
+・手書き○の位置
+
+を視覚的に確認してください。
 """
 
 
-PAGE1_STRUCTURE = """
-【1枚目の書類構造】
+# ============================================================
+# PAGE1 構造
+# ============================================================
 
-これはクレジット申込書です。
+PAGE1 = """
+【1枚目：クレジット申込書】
 
-書類を上から下へ見ると、
-概ね次の構造です。
+この帳票は大きく、
 
-A：ご契約者本人情報
-B：ご契約者の勤務先情報
+A：ご契約者本人
+B：ご契約者勤務先
 C：世帯主・世帯状況
 D：関係者情報
-E：銀行口座情報
-F：契約関連情報
+E：銀行口座
+F：契約関連
 
-必ずこの構造を使って
-対象欄を特定してください。
-
-
-【勤務先ブロック】
-
-雇用形態・業種・会社名・所在地・勤務年数・給料日等は
-Bの勤務先ブロックにあります。
-
-本人情報や関係者情報にある○や数字を
-勤務先情報として扱ってはいけません。
+の順番で構成されています。
 
 
-【雇用形態の固定配置】
+━━━━━━━━━━━━━━━━━━━━━━
 
-雇用形態は、
+【B：本人勤務先】
 
-1段目：
+本人住所等の下側にあります。
+
+ここには、
+
+・雇用形態
+・業種
+・会社名
+・所在地
+・郵便番号
+・電話番号
+・勤務年数
+・給料日
+・派遣先／出向先
+
+などがあります。
+
+Dの関係者情報とは
+完全に別のブロックです。
+
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+【本人の雇用形態】
+
+印刷された選択肢の固定順は、
+
+1段目・左から
+
 正社員
 派遣社員
 契約社員
 パート・アルバイト
 
-2段目：
+2段目・左から
+
 公務員
 事業者
 主婦
 年金
 学生
 
-の順番です。
+です。
 
-特に
-「派遣社員」と「契約社員」は隣接しています。
 
-文字認識だけではなく、
-選択肢の固定された並びと
-手書き○の中心位置を使って判定してください。
-
+━━━━━━━━━━━━━━━━━━━━━━
 
 【世帯状況】
 
-「世帯主の年収(税込)」と
+「世帯主の年収(税込)」
+
+と
 
 「世帯主のクレジットの
 月あたりのお支払額」
 
-は完全に別の項目です。
-
-年収を月額クレジットとして
-読み取ってはいけません。
+は完全に別の欄です。
 
 
-【関係者情報】
+━━━━━━━━━━━━━━━━━━━━━━
 
-Dブロックは本人情報とは別です。
+【D：関係者情報】
 
-本人の住所、電話番号、勤務先などを
-関係者情報として流用してはいけません。
+本人情報とは別です。
 
+関係者情報の氏名・住所・勤務先・雇用形態等は
+必ずDブロック内だけを見てください。
+
+
+━━━━━━━━━━━━━━━━━━━━━━
 
 【銀行】
 
 ゆうちょ銀行側と
 ゆうちょ銀行以外の銀行側があります。
 
-どちらか一方に必要な記入があればOKです。
+どちらか一方で構いません。
 """
 
 
-PAGE2_STRUCTURE = """
-【2枚目の書類構造】
+# ============================================================
+# PAGE2 構造
+# ============================================================
 
-これは役務申込書・指導内容です。
+PAGE2 = """
+【2枚目：役務申込書・指導内容】
 
-大きく、
+概ね、
 
 左上：
-契約者・保護者関連
+契約者／保護者
 
 右上：
-指導対象A/B/C・学校関連
+指導対象A/B/C／学校
 
 中央～下：
-コース・指導内容・期間
+コース／指導内容／期間
 
-中央右～下：
-教材・数量・各単価・小計の表
+中央～右下：
+教材／数量／各単価／小計
 
 最上部右側：
-書面交付日と受領サイン
+書面交付日／受領サイン
 
 という構造です。
 
 
 【受領サイン】
 
-受領サインは
-書類右上の上部バーにあります。
-
-印刷された
+最上部右側にある
 
 「受領サイン →」
 
-のすぐ右側の指定欄だけを確認してください。
-
-他の氏名や署名を
-受領サインとして使用してはいけません。
+の矢印直後の欄だけを確認してください。
 
 
-【数量表】
+【数量】
 
-表は概ね
+数量表は、
 
-横方向の選択・学年等
+横方向の選択欄
 → 数量
 → 各単価
 → 小計
 
-という列関係です。
+という関係です。
 
-必ず印刷された「数量」列を特定してください。
-
-「数量」より右側の
-各単価、小計、合計の金額は
-数量ではありません。
+各単価、小計、合計などの金額を
+数量として使用禁止です。
 """
 
 
 # ============================================================
-# Gemini
+# Gemini通信
 # ============================================================
 
 def prepare_image(image):
 
-    image = ImageOps.exif_transpose(image).convert("RGB")
+    image = ImageOps.exif_transpose(image)
+    image = image.convert("RGB")
 
-    buffer = io.BytesIO()
+    buf = io.BytesIO()
 
+    # 文字や○を潰さないため高品質
     image.save(
-        buffer,
+        buf,
         format="JPEG",
-        quality=97
+        quality=98,
+        subsampling=0
     )
 
-    return buffer.getvalue()
+    return buf.getvalue()
 
 
-def ask_gemini(image_bytes, prompt, schema):
+def ask(image_bytes, prompt, schema):
 
     response = client.models.generate_content(
+
         model=MODEL,
 
         contents=[
@@ -521,13 +623,15 @@ def ask_gemini(image_bytes, prompt, schema):
         )
     )
 
-    return schema.model_validate_json(response.text)
+    return schema.model_validate_json(
+        response.text
+    )
 
 
-def safe_analysis(image_bytes, prompt, schema):
+def safe_ask(image_bytes, prompt, schema):
 
     try:
-        return ask_gemini(
+        return ask(
             image_bytes,
             prompt,
             schema
@@ -535,7 +639,9 @@ def safe_analysis(image_bytes, prompt, schema):
 
     except Exception as e:
 
-        st.error("Gemini APIでエラーが発生しました")
+        st.error(
+            "Gemini APIでエラーが発生しました"
+        )
 
         st.code(
             f"{type(e).__name__}: {str(e)}"
@@ -548,99 +654,49 @@ def safe_analysis(image_bytes, prompt, schema):
 
 
 # ============================================================
-# 表示
+# 表示関数
 # ============================================================
 
-def show_field(label, field):
+def show_field(label, value):
 
-    if field.uncertain or not field.located:
-        st.warning(f"🔍 {label}：要確認")
+    if value.uncertain or not value.located:
 
-    elif field.has_entry:
-        st.success(f"✅ {label}：記入あり")
+        st.warning(
+            f"🔍 {label}：要確認"
+        )
 
-    else:
-        st.error(f"❌ {label}：未記入")
+    elif value.has_entry:
 
-
-def show_circle(label, field):
-
-    if field.uncertain or not field.located:
-        st.warning(f"🔍 {label}：要確認")
-
-    elif field.has_circle:
-        st.success(f"✅ {label}：選択あり")
+        st.success(
+            f"✅ {label}：記入あり"
+        )
 
     else:
-        st.error(f"❌ {label}：選択なし")
 
-
-def show_work_years(label, result):
-
-    if result.uncertain or not result.field_located:
-        st.warning(f"🔍 {label}：要確認")
-        return
-
-    if (
-        not result.year_has_entry
-        and not result.months_has_entry
-    ):
         st.error(
-            f"❌ {label}：年・ヶ月とも未記入"
+            f"❌ {label}：未記入"
         )
-        return
 
-    if not result.year_has_entry:
 
-        if result.months_value is not None:
-            st.error(
-                f"❌ {label}：年が未記入 "
-                f"（ヶ月：{result.months_value}ヶ月）"
-            )
-        else:
-            st.error(
-                f"❌ {label}：年が未記入"
-            )
+def show_circle(label, value):
 
-        return
+    if value.uncertain or not value.located:
 
-    if not result.months_has_entry:
-
-        if result.year_value is not None:
-            st.error(
-                f"❌ {label}：ヶ月が未記入 "
-                f"（年：{result.year_value}年）"
-            )
-        else:
-            st.error(
-                f"❌ {label}：ヶ月が未記入"
-            )
-
-        return
-
-    if (
-        result.year_value is None
-        or result.months_value is None
-    ):
         st.warning(
-            f"🔍 {label}：数字を正確に読み取れません"
+            f"🔍 {label}：要確認"
         )
-        return
 
-    if result.months_value < 0 or result.months_value > 11:
-        st.warning(
-            f"🔍 {label}："
-            f"{result.year_value}年"
-            f"{result.months_value}ヶ月 "
-            "（ヶ月の値を確認してください）"
+    elif value.has_circle:
+
+        st.success(
+            f"✅ {label}：選択あり"
         )
-        return
 
-    st.success(
-        f"✅ {label}："
-        f"{result.year_value}年"
-        f"{result.months_value}ヶ月"
-    )
+    else:
+
+        st.error(
+            f"❌ {label}：選択なし"
+        )
 
 
 # ============================================================
@@ -650,14 +706,14 @@ def show_work_years(label, result):
 st.divider()
 
 relation_enabled = st.checkbox(
-    "1枚目の「関係者情報」もチェックする",
+    "関係者情報をチェックする",
     value=True
 )
 
 st.subheader("① クレジット申込書")
 
 page1_file = st.file_uploader(
-    "1枚目の写真を選択",
+    "1枚目を選択",
     type=["jpg", "jpeg", "png", "webp"],
     key="page1"
 )
@@ -665,7 +721,7 @@ page1_file = st.file_uploader(
 st.subheader("② 役務申込書・指導内容")
 
 page2_file = st.file_uploader(
-    "2枚目の写真を選択",
+    "2枚目を選択",
     type=["jpg", "jpeg", "png", "webp"],
     key="page2"
 )
@@ -673,10 +729,8 @@ page2_file = st.file_uploader(
 
 if page1_file:
 
-    p1_image = Image.open(page1_file)
-
     st.image(
-        p1_image,
+        Image.open(page1_file),
         caption="① クレジット申込書",
         use_container_width=True
     )
@@ -684,10 +738,8 @@ if page1_file:
 
 if page2_file:
 
-    p2_image = Image.open(page2_file)
-
     st.image(
-        p2_image,
+        Image.open(page2_file),
         caption="② 役務申込書・指導内容",
         use_container_width=True
     )
@@ -695,10 +747,6 @@ if page2_file:
 
 st.divider()
 
-
-# ============================================================
-# 実行
-# ============================================================
 
 if st.button(
     "契約書をチェック",
@@ -709,7 +757,7 @@ if st.button(
     if not page1_file and not page2_file:
 
         st.warning(
-            "契約書の写真を選択してください。"
+            "写真を選択してください。"
         )
 
         st.stop()
@@ -721,106 +769,147 @@ if st.button(
 
     if page1_file:
 
-        st.header("① クレジット申込書")
+        p1 = prepare_image(
+            Image.open(page1_file)
+        )
 
-        p1_image = Image.open(page1_file)
-        p1_bytes = prepare_image(p1_image)
+        st.header(
+            "① クレジット申込書"
+        )
 
 
-        # ----------------------------------------------------
-        # ご契約者
-        # ----------------------------------------------------
+        # ====================================================
+        # 本人基本情報
+        # ====================================================
 
-        with st.spinner("① ご契約者情報を確認中..."):
+        with st.spinner(
+            "ご契約者情報を確認中..."
+        ):
 
-            applicant = safe_analysis(
-                p1_bytes,
+            applicant = safe_ask(
 
-                COMMON
-                + PAGE1_STRUCTURE
-                + """
-【今回の対象】
+                p1,
 
-A：ご契約者本人情報だけ。
+                COMMON + PAGE1 + """
+今回確認するのは
+A：ご契約者本人情報だけです。
 
 確認対象：
 
-・氏名
-・氏名フリガナ
-・性別
-・生年月日
-・ご住所
-・ご住所のフリガナ
-・郵便番号
-・ご住居
-・固定電話
-・携帯電話
+氏名
+氏名フリガナ
+性別
+生年月日
+住所
+住所フリガナ
+郵便番号
+住居
+固定電話
+携帯電話
 
-住所フリガナは、
-本人住所に対応する
+住所フリガナは
+本人住所に直接対応する
 住所フリガナ欄だけを確認してください。
 
 氏名フリガナを
 住所フリガナとして使用禁止。
 
-電話は、
+電話番号は、
 固定電話または携帯電話の
-どちらか一方が記入されていればOKです。
+どちらか一方が記入されていればOK。
 """,
+
                 ApplicantResult
             )
 
 
         if applicant:
 
-            st.subheader("ご契約者")
+            st.subheader(
+                "ご契約者"
+            )
 
-            show_field("氏名", applicant.name)
-            show_field("氏名フリガナ", applicant.name_furigana)
-            show_circle("性別", applicant.gender)
-            show_field("生年月日", applicant.birth_date)
-            show_field("ご住所", applicant.address)
-            show_field("ご住所フリガナ", applicant.address_furigana)
-            show_field("郵便番号", applicant.postal_code)
-            show_circle("ご住居", applicant.residence)
+            show_field(
+                "氏名",
+                applicant.name
+            )
+
+            show_field(
+                "氏名フリガナ",
+                applicant.name_furigana
+            )
+
+            show_circle(
+                "性別",
+                applicant.gender
+            )
+
+            show_field(
+                "生年月日",
+                applicant.birth_date
+            )
+
+            show_field(
+                "ご住所",
+                applicant.address
+            )
+
+            show_field(
+                "ご住所フリガナ",
+                applicant.address_furigana
+            )
+
+            show_field(
+                "郵便番号",
+                applicant.postal_code
+            )
+
+            show_circle(
+                "ご住居",
+                applicant.residence
+            )
 
             if applicant.phone_uncertain:
 
-                st.warning("🔍 連絡先：要確認")
+                st.warning(
+                    "🔍 連絡先：要確認"
+                )
 
             elif (
                 applicant.fixed_phone_has_entry
                 or applicant.mobile_phone_has_entry
             ):
 
-                st.success("✅ 連絡先：記入あり")
+                st.success(
+                    "✅ 連絡先：記入あり"
+                )
 
             else:
 
                 st.error(
-                    "❌ 連絡先：固定電話・携帯電話とも未記入"
+                    "❌ 連絡先：未記入"
                 )
 
 
-        # ----------------------------------------------------
-        # 住所・都道府県
-        # ----------------------------------------------------
+        # ====================================================
+        # 本人住所 都道府県
+        # ====================================================
 
-        with st.spinner("① 住所の都道府県を確認中..."):
+        with st.spinner(
+            "住所を確認中..."
+        ):
 
-            address_rule = safe_analysis(
-                p1_bytes,
+            address = safe_ask(
 
-                COMMON
-                + PAGE1_STRUCTURE
-                + """
-【対象】
+                p1,
 
-ご契約者本人の
-「ご契約者のご住所」欄だけ。
+                COMMON + PAGE1 + """
+今回確認するのは
+Aブロックの
+「ご契約者のご住所」だけです。
 
-住所文字列そのものに
-都道府県名が明示されている必要があります。
+住所文字列そのものが
+都道府県名から始まっているかを確認。
 
 例：
 
@@ -830,32 +919,39 @@ A：ご契約者本人情報だけ。
 大阪市...
 → prefecture_explicit=false
 
-市区町村名から都道府県を
-推測してはいけません。
+神戸市...
+→ prefecture_explicit=false
 
-フォームに最初から印刷されている
-「都・道・府・県」だけでは
-都道府県の記入とはみなしません。
+市区町村から
+都道府県を推測してはいけません。
+
+フォームに印刷されている
+「都・道・府・県」という文字だけでは
+都道府県記入とはみなしません。
 """,
+
                 AddressRuleResult
             )
 
 
-        if address_rule:
+        if address:
 
-            if address_rule.uncertain or not address_rule.field_located:
+            if (
+                address.uncertain
+                or not address.field_located
+            ):
 
                 st.warning(
-                    "🔍 住所の都道府県：要確認"
+                    "🔍 ご住所の都道府県：要確認"
                 )
 
-            elif not address_rule.has_entry:
+            elif not address.has_entry:
 
                 st.error(
                     "❌ ご住所：未記入"
                 )
 
-            elif address_rule.prefecture_explicit:
+            elif address.prefecture_explicit:
 
                 st.success(
                     "✅ ご住所：都道府県から記入"
@@ -868,121 +964,172 @@ A：ご契約者本人情報だけ。
                 )
 
 
-        # ----------------------------------------------------
-        # ★ 雇用形態・強化版
-        # ----------------------------------------------------
+        # ====================================================
+        # ★ 本人雇用形態
+        # ====================================================
 
-        with st.spinner("① 雇用形態を確認中..."):
+        with st.spinner(
+            "雇用形態を確認中..."
+        ):
 
-            employment = safe_analysis(
-                p1_bytes,
+            employment = safe_ask(
 
-                COMMON
-                + PAGE1_STRUCTURE
-                + """
-【今回の対象は「雇用形態」だけ】
+                p1,
 
-最初に、
-ご契約者本人の勤務先ブロックを
-特定してください。
+                COMMON + PAGE1 + """
+今回確認する対象は
 
-本人情報の下、
-世帯主・世帯状況の上にある
-勤務先ブロックです。
+B：ご契約者勤務先ブロック内の
+「雇用形態」
 
-その中にある
-印刷された「雇用形態」というラベルを
-必ず発見してください。
+ただ1つです。
 
 
-【選択肢の固定配置】
+━━━━━━━━━━━━━━━━━━━━━━
 
-雇用形態の選択肢は
-次の固定された順番です。
+【最初にすること】
 
-1段目・左から右：
+数字や○を探す前に、
 
-① 正社員
-② 派遣社員
-③ 契約社員
-④ パート・アルバイト
+1.
+ご契約者本人の勤務先ブロック
 
-2段目・左から右：
+2.
+その中の印刷された
+「雇用形態」
 
-⑤ 公務員
-⑥ 事業者
-⑦ 主婦
-⑧ 年金
-⑨ 学生
+3.
+その右側または周囲に並ぶ
+雇用形態の選択肢
 
-
-文字を読むだけで判断せず、
-
-・雇用形態ラベルの位置
-・9個の選択肢の固定配置
-・手書き○の中心位置
-
-を組み合わせて判断してください。
+を特定してください。
 
 
-【重要】
+━━━━━━━━━━━━━━━━━━━━━━
 
-○が文字から少しずれていても、
-○の中心位置が選択肢の領域に
-明確に対応していれば
-その選択肢をtrueにしてください。
+【固定された選択肢】
 
+1段目を左から：
 
-特に
-
+正社員
 派遣社員
 契約社員
+パート・アルバイト
 
-は隣同士です。
+2段目を左から：
 
-左側が派遣社員、
-その右側が契約社員です。
-
-
-【絶対禁止】
-
-次の○を使用禁止：
-
-・性別
-・ご住居
-・業種
-・世帯状況
-・関係者情報
-・銀行
-・その他の選択欄
+公務員
+事業者
+主婦
+年金
+学生
 
 
-雇用形態欄に○が存在することは分かるが、
-どの選択肢か判別できない場合は、
+━━━━━━━━━━━━━━━━━━━━━━
 
-field_located=true
+【非常に重要】
+
+まず、
+
+「雇用形態の選択肢領域の中に
+手書きの○が存在するか」
+
+を視覚的に確認してください。
+
+存在すれば
+
+circle_visible=true
+
+です。
+
+
+その後で初めて、
+○の中心位置がどの選択肢に
+対応するか判断してください。
+
+
+○が印刷文字と重なっていても構いません。
+
+文字OCRだけで判断してはいけません。
+
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+【派遣社員と契約社員】
+
+特に重要です。
+
+1段目は
+
+正社員
+↓右
+派遣社員
+↓右
+契約社員
+↓右
+パート・アルバイト
+
+の順番です。
+
+派遣社員は
+正社員の右隣。
+
+契約社員は
+派遣社員の右隣です。
+
+○の中心が
+派遣社員の印刷文字領域に
+重なっているなら
+
+dispatch_employee=true
+
+です。
+
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+【禁止】
+
+次の○は絶対に使用禁止。
+
+性別
+住居
+業種
+世帯状況
+関係者の雇用形態
+関係者の住居
+銀行
+
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+【重要な安全ルール】
+
+circle_visible=true
+なのに、
+
+どの選択肢かだけが
+判別できない場合、
+
+全選択肢をfalseにして
+「選択なし」にしてはいけません。
+
+その場合は
+
 uncertain=true
 
 にしてください。
 
-この場合、
-全項目falseで
-「選択なし」と断定してはいけません。
 
+○が本当に存在しない場合だけ
 
-雇用形態欄自体を
-特定できない場合は、
+circle_visible=false
+uncertain=false
 
-field_located=false
-uncertain=true
-
-にしてください。
-
-
-○が明確な場合だけ、
-対応する選択肢をtrueにしてください。
+です。
 """,
-                EmploymentResult
+
+                ApplicantEmploymentResult
             )
 
 
@@ -990,86 +1137,151 @@ uncertain=true
 
         if employment:
 
-            st.subheader("勤務先")
+            st.subheader(
+                "勤務先"
+            )
 
-            emp_options = [
-                ("正社員", employment.regular_employee),
-                ("派遣社員", employment.dispatch_employee),
-                ("契約社員", employment.contract_employee),
-                ("パート・アルバイト", employment.parttime_employee),
-                ("公務員", employment.public_employee),
-                ("事業者", employment.business_owner),
-                ("主婦", employment.housewife),
-                ("年金", employment.pension),
-                ("学生", employment.student),
+            choices = [
+
+                (
+                    "正社員",
+                    employment.regular_employee
+                ),
+
+                (
+                    "派遣社員",
+                    employment.dispatch_employee
+                ),
+
+                (
+                    "契約社員",
+                    employment.contract_employee
+                ),
+
+                (
+                    "パート・アルバイト",
+                    employment.parttime_employee
+                ),
+
+                (
+                    "公務員",
+                    employment.public_employee
+                ),
+
+                (
+                    "事業者",
+                    employment.business_owner
+                ),
+
+                (
+                    "主婦",
+                    employment.housewife
+                ),
+
+                (
+                    "年金",
+                    employment.pension
+                ),
+
+                (
+                    "学生",
+                    employment.student
+                ),
             ]
+
 
             selected = [
+
                 name
-                for name, value in emp_options
-                if value
+
+                for name, selected_value
+                in choices
+
+                if selected_value
             ]
 
-            dispatch_selected = employment.dispatch_employee
 
-            if employment.uncertain or not employment.field_located:
+            dispatch_selected = (
+                employment.dispatch_employee
+            )
+
+
+            if (
+                employment.uncertain
+                or not employment.field_located
+            ):
 
                 st.warning(
                     "🔍 雇用形態：要確認"
                 )
 
-            elif len(selected) == 0:
+
+            elif not employment.circle_visible:
 
                 st.error(
                     "❌ 雇用形態：選択なし"
                 )
 
+
+            elif len(selected) == 0:
+
+                # ○は見えている。
+                # 選択肢だけ分からないので
+                # 「未選択」にはしない。
+
+                st.warning(
+                    "🔍 雇用形態："
+                    "○は確認できましたが選択肢を特定できません"
+                )
+
+
             elif len(selected) > 1:
 
                 st.warning(
-                    "🔍 雇用形態：複数検出 "
+                    "🔍 雇用形態：複数候補 "
                     + " / ".join(selected)
                 )
+
 
             else:
 
                 st.success(
-                    "✅ 雇用形態：" + selected[0]
+                    "✅ 雇用形態："
+                    + selected[0]
                 )
 
 
-        # ----------------------------------------------------
-        # 勤務先
-        # ----------------------------------------------------
+        # ====================================================
+        # 勤務先基本
+        # ====================================================
 
-        with st.spinner("① 勤務先情報を確認中..."):
+        with st.spinner(
+            "勤務先情報を確認中..."
+        ):
 
-            work = safe_analysis(
-                p1_bytes,
+            work = safe_ask(
 
-                COMMON
-                + PAGE1_STRUCTURE
-                + """
-【対象】
+                p1,
 
-ご契約者本人の勤務先ブロックだけ。
+                COMMON + PAGE1 + """
+B：ご契約者本人の
+勤務先ブロックだけを確認。
 
-確認：
+対象：
 
-・会社名
-・所在地
-・所在地の郵便番号
-・所在地の電話番号
-・勤務年数
-・給料日
-・派遣先・出向先の会社名
+会社名
+所在地
+所在地郵便番号
+所在地電話番号
+給料日
+派遣先・出向先の会社名
 
-ここでは内容の正しさではなく、
-指定欄に記入が存在するかを確認します。
+勤務年数と雇用形態は
+この判定では扱いません。
 
-派遣先・出向先については、
-その指定欄そのものだけを確認してください。
+別ブロックの記入を流用禁止。
 """,
+
                 WorkResult
             )
 
@@ -1097,20 +1309,23 @@ uncertain=true
             )
 
             show_field(
-                "勤務年数・記入",
-                work.years_employed
-            )
-
-            show_field(
                 "給料日",
                 work.payday
             )
+
 
             if dispatch_selected:
 
                 show_field(
                     "派遣先・出向先の会社名",
                     work.dispatch_destination
+                )
+
+            elif employment and employment.uncertain:
+
+                st.warning(
+                    "🔍 派遣先・出向先："
+                    "雇用形態が要確認のため要確認"
                 )
 
             else:
@@ -1120,307 +1335,326 @@ uncertain=true
                 )
 
 
-        # ----------------------------------------------------
-        # ★ 勤務年数・強化版
-        # ----------------------------------------------------
+        # ====================================================
+        # ★ 勤務年数 19年0ヶ月対策
+        # ====================================================
 
         with st.spinner(
-            "① 勤務年数の年・ヶ月を確認中..."
+            "勤務年数を確認中..."
         ):
 
-            applicant_work_years = safe_analysis(
-                p1_bytes,
+            years = safe_ask(
 
-                COMMON
-                + PAGE1_STRUCTURE
-                + """
-【今回の対象は1つだけ】
+                p1,
 
-ご契約者本人の勤務先ブロックにある
-「勤務年数」だけを確認してください。
+                COMMON + PAGE1 + """
+今回見る対象は1つだけ。
 
-
-━━━━━━━━━━━━━━━━━━━━
-
-STEP 1
-
-まず書類全体から
-「ご契約者本人の勤務先ブロック」を
-特定してください。
-
-本人情報の下、
-世帯状況の上です。
+B：ご契約者本人勤務先の
+「勤務年数」欄です。
 
 
-STEP 2
+━━━━━━━━━━━━━━━━━━━━━━
 
-その勤務先ブロック内にある
+【絶対に守る順番】
 
-「勤務年数」
+最初に数字を探してはいけません。
 
-という印刷ラベルを
-実際に発見してください。
+必ず、
+
+本人勤務先ブロック
+↓
+印刷された「勤務年数」
+↓
+その勤務年数に対応する記入欄
+↓
+印刷された「年」
+↓
+印刷された「ヶ月」
+
+の順番で位置関係を確認。
 
 
-STEP 3
+━━━━━━━━━━━━━━━━━━━━━━
 
-その「勤務年数」ラベルに
-直接対応している記入欄だけを
-対象にしてください。
+勤務年数欄は、
+
+[手書き数字] 年 [手書き数字] ヶ月
+
+という構造です。
 
 
-STEP 4
-
-その欄の中にある
-
-［手書き数字］ 年 ［手書き数字］ ヶ月
-
-という位置関係を確認してください。
-
-━━━━━━━━━━━━━━━━━━━━
-
+━━━━━━━━━━━━━━━━━━━━━━
 
 【年】
 
-印刷された「年」の
-直前の記入スペースだけを見ます。
+まず印刷された「年」を特定。
 
-そこに手書き数字が存在する場合：
+その直前の記入位置に
+手書き筆跡があるかを確認。
 
-year_has_entry=true
+あるなら
 
-その手書き数字を：
+year_handwriting_visible=true
 
-year_value
+です。
 
-に入れてください。
+その数字を明確に読める場合だけ
+year_valueに入れてください。
 
+
+━━━━━━━━━━━━━━━━━━━━━━
 
 【ヶ月】
 
-印刷された「ヶ月」の
-直前の記入スペースだけを見ます。
+ここが特に重要です。
 
-そこに手書き数字が存在する場合：
+まず印刷された「ヶ月」を特定。
 
-months_has_entry=true
+次に、
 
-その手書き数字を：
+「ヶ月」の直前の記入位置に
+手書き筆跡が存在するか
 
-months_value
+を数字の意味とは別に
+視覚的に確認してください。
 
-に入れてください。
+筆跡がある場合、
 
+months_handwriting_visible=true
 
-━━━━━━━━━━━━━━━━━━━━
-
-【最重要ルール】
-
-数字を先に探してはいけません。
-
-必ず
-
-勤務先ブロック
-↓
-勤務年数ラベル
-↓
-勤務年数の記入欄
-↓
-「年」「ヶ月」
-↓
-その直前の数字
-
-という順番です。
+です。
 
 
-たとえば書類内に
+━━━━━━━━━━━━━━━━━━━━━━
 
-19
-20
-26
-2026
+【0ヶ月は記入あり】
 
-などが存在しても、
+数字の「0」は、
 
-勤務年数欄の中に
-実際に書かれていなければ
-絶対に使用してはいけません。
+小さな丸
+楕円
+円形の筆跡
 
-━━━━━━━━━━━━━━━━━━━━
+に見えることがあります。
 
+これを
 
-【絶対に使用禁止】
+空欄
+印刷された丸
+汚れ
 
-・生年月日
-・年齢
-・契約年月日
-・受領年月日
-・年収
-・税込年収
-・月額支払額
-・給料日
-・郵便番号
-・電話番号
-・会社所在地
-・世帯主情報
-・関係者情報
-・関係者の勤務年数
+と安易に判断してはいけません。
 
 
-━━━━━━━━━━━━━━━━━━━━
+「ヶ月」の直前の数字記入位置に
 
-【0は記入あり】
+手書きの0
 
-実際に
+が存在する場合、
 
-0年
-0ヶ月
+months_handwriting_visible=true
+months_zero_visible=true
+months_value=0
 
-と書かれている場合は
-記入ありです。
+です。
 
+
+0は明確な数字です。
+
+0ヶ月を
+「ヶ月未記入」
+にしてはいけません。
+
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+【重要】
+
+months_valueが0だから
+記入なし、
+
+という判断は禁止。
+
+0は記入ありです。
+
+
+━━━━━━━━━━━━━━━━━━━━━━
 
 【例】
 
-3年8ヶ月
+19年0ヶ月
 
-→
+の場合：
+
 field_located=true
-year_has_entry=true
-year_value=3
-months_has_entry=true
-months_value=8
-uncertain=false
 
+year_position_located=true
+year_handwriting_visible=true
+year_value=19
 
-3年0ヶ月
-
-→
-field_located=true
-year_has_entry=true
-year_value=3
-months_has_entry=true
+months_position_located=true
+months_handwriting_visible=true
+months_zero_visible=true
 months_value=0
+
 uncertain=false
 
 
-0年6ヶ月
+━━━━━━━━━━━━━━━━━━━━━━
 
-→
-field_located=true
-year_has_entry=true
-year_value=0
-months_has_entry=true
-months_value=6
-uncertain=false
+【禁止】
 
+勤務年数以外にある
 
-3年　ヶ月
+生年月日
+年齢
+西暦
+契約日
+年収
+給料日
+郵便番号
+電話番号
+世帯主情報
+関係者情報
 
-→
-field_located=true
-year_has_entry=true
-year_value=3
-months_has_entry=false
-months_value=null
-uncertain=false
+の数字は使用禁止。
 
 
-年　6ヶ月
+━━━━━━━━━━━━━━━━━━━━━━
 
-→
-field_located=true
-year_has_entry=false
-year_value=null
-months_has_entry=true
-months_value=6
-uncertain=false
+勤務年数欄に筆跡が見えるが
+数字だけ読めない場合は
 
-
-━━━━━━━━━━━━━━━━━━━━
-
-【最終確認】
-
-year_value または
-months_value を返す前に、
-
-その数字が
-
-「本人勤務先ブロックの勤務年数欄」
-
-の枠内または
-その記入位置に本当に存在するか
-もう一度確認してください。
-
-
-確信できない場合、
-数字を推測してはいけません。
-
-
-欄自体を特定できない：
-
-field_located=false
+「未記入」ではなく
 uncertain=true
 
-
-欄は分かるが数字が不鮮明：
-
-field_located=true
-uncertain=true
+にしてください。
 """,
-                WorkYearsCheck
+
+                WorkYearsResult
             )
 
 
-        if applicant_work_years:
+        if years:
 
-            show_work_years(
-                "勤務年数",
-                applicant_work_years
-            )
+            if (
+                years.uncertain
+                or not years.field_located
+            ):
+
+                st.warning(
+                    "🔍 勤務年数：要確認"
+                )
+
+            elif not years.year_position_located:
+
+                st.warning(
+                    "🔍 勤務年数：「年」欄を特定できません"
+                )
+
+            elif not years.months_position_located:
+
+                st.warning(
+                    "🔍 勤務年数：「ヶ月」欄を特定できません"
+                )
+
+            elif not years.year_handwriting_visible:
+
+                st.error(
+                    "❌ 勤務年数：年が未記入"
+                )
+
+            elif not years.months_handwriting_visible:
+
+                st.error(
+                    "❌ 勤務年数：ヶ月が未記入"
+                )
+
+            elif years.year_value is None:
+
+                st.warning(
+                    "🔍 勤務年数：年の数字を要確認"
+                )
+
+            else:
+
+                # 0ヶ月専用救済
+                if years.months_zero_visible:
+
+                    months = 0
+
+                else:
+
+                    months = years.months_value
 
 
-        # ----------------------------------------------------
+                if months is None:
+
+                    st.warning(
+                        "🔍 勤務年数："
+                        "ヶ月の記入はありますが数字を要確認"
+                    )
+
+                elif months < 0 or months > 11:
+
+                    st.warning(
+                        "🔍 勤務年数："
+                        f"{years.year_value}年{months}ヶ月 "
+                        "（ヶ月を確認してください）"
+                    )
+
+                else:
+
+                    st.success(
+                        "✅ 勤務年数："
+                        f"{years.year_value}年{months}ヶ月"
+                    )
+
+
+        # ====================================================
         # 業種
-        # ----------------------------------------------------
+        # ====================================================
 
-        with st.spinner("① 業種を確認中..."):
+        with st.spinner(
+            "業種を確認中..."
+        ):
 
-            industry = safe_analysis(
-                p1_bytes,
+            industry = safe_ask(
 
-                COMMON
-                + PAGE1_STRUCTURE
-                + """
-【対象】
+                p1,
 
-ご契約者本人の勤務先ブロック内の
-印刷された「業種」欄だけ。
+                COMMON + PAGE1 + """
+B：本人勤務先ブロック内の
+印刷された「業種」だけを確認。
 
-まず「業種」ラベルを確認し、
-その業種選択肢の範囲内に
-手書き○が存在する場合だけ
-circle_present=true。
+まず業種ラベルを特定。
 
-雇用形態、
-性別、
-住居、
-世帯状況、
-関係者情報等の○は使用禁止。
+その業種の選択肢領域内に
+手書き○がある場合だけ
+
+circle_visible=true。
+
+雇用形態やその他の○は
+使用禁止。
 """,
+
                 IndustryResult
             )
 
 
         if industry:
 
-            if industry.uncertain or not industry.field_located:
+            if (
+                industry.uncertain
+                or not industry.field_located
+            ):
 
                 st.warning(
                     "🔍 業種：要確認"
                 )
 
-            elif industry.circle_present:
+            elif industry.circle_visible:
 
                 st.success(
                     "✅ 業種：選択あり"
@@ -1433,207 +1667,258 @@ circle_present=true。
                 )
 
 
-        # ----------------------------------------------------
-        # 世帯状況・月額クレジット
-        # ----------------------------------------------------
+        # ====================================================
+        # 世帯状況
+        # ====================================================
 
-        with st.spinner("① 世帯状況を確認中..."):
+        with st.spinner(
+            "世帯状況を確認中..."
+        ):
 
-            household = safe_analysis(
-                p1_bytes,
+            household = safe_ask(
 
-                COMMON
-                + PAGE1_STRUCTURE
-                + """
-【対象】
+                p1,
 
-C：世帯主・世帯状況ブロック。
+                COMMON + PAGE1 + """
+C：世帯主・世帯状況だけを確認。
 
-必要な記入欄・選択欄に
-記入または○が存在するか確認してください。
+必要な記入項目と
+必要な選択項目が埋まっているか確認。
 
-右側の「連絡先」は
-空欄でも問題ありません。
+ただし、
+世帯主確認欄の右側にある
+「連絡先」は空欄でも問題ありません。
 
-
-さらに、
-
-「世帯主のクレジットの
-月あたりのお支払額」
-
-という正確な欄だけを
-確認してください。
-
-
-【重要】
-
-すぐ近くにある
-
-「世帯主の年収(税込)」
-
-とは別の欄です。
-
-年収欄に
-
-400万円
-500万円
-
-などがあっても
-月額クレジットとして
-絶対に使用してはいけません。
-
-
-月額クレジット欄に
-実際に金額が書かれている場合だけ、
-
-monthly_credit_has_entry=true
-
-としてください。
-
-
-読み取れる場合は
-円単位の整数として
-
-monthly_credit_yen
-
-に入れてください。
-
-
-例：
-
-8万円
-→ 80000
-
-100,000円
-→ 100000
-
-12万円
-→ 120000
-
-
-月額欄を確実に特定できない場合は
-uncertain=true。
+月あたりクレジット金額は
+この判定では扱いません。
 """,
-                HouseholdResult
+
+                HouseholdBasicResult
             )
 
 
         if household:
 
-            st.subheader("世帯状況")
+            st.subheader(
+                "世帯状況"
+            )
 
-            if household.uncertain:
+            if (
+                household.uncertain
+                or not household.field_located
+            ):
 
                 st.warning(
                     "🔍 世帯状況：要確認"
                 )
 
+            elif (
+                household.required_entries_present
+                and household.required_selections_present
+            ):
+
+                st.success(
+                    "✅ 世帯状況：必要項目記入あり"
+                )
+
             else:
 
-                if (
-                    household.household_required_entries_present
-                    and
-                    household.household_required_selections_present
-                ):
-
-                    st.success(
-                        "✅ 世帯状況：必要項目記入あり"
-                    )
-
-                else:
-
-                    st.error(
-                        "❌ 世帯状況：必要項目に記入漏れあり"
-                    )
+                st.error(
+                    "❌ 世帯状況：記入・選択漏れあり"
+                )
 
 
-            if not household.monthly_credit_field_located:
+        # ====================================================
+        # ★ 月あたりクレジット
+        # ====================================================
+
+        with st.spinner(
+            "月あたりクレジットを確認中..."
+        ):
+
+            monthly_credit = safe_ask(
+
+                p1,
+
+                COMMON + PAGE1 + """
+今回確認するのは1つだけ。
+
+C：世帯状況ブロックの
+
+「世帯主のクレジットの
+月あたりのお支払額」
+
+という印刷欄です。
+
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+まずこの印刷ラベルを
+確実に特定してください。
+
+そのラベルに直接対応する
+金額記入欄だけを見る。
+
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+すぐ近くにある
+
+「世帯主の年収(税込)」
+
+は絶対に使用禁止。
+
+
+例：
+
+年収欄に
+400万円
+
+と書かれていても、
+
+月あたり支払額を
+400万円や400000円と
+判断してはいけません。
+
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+指定された月額欄に
+手書き筆跡が存在する場合：
+
+handwriting_visible=true
+
+
+金額を明確に読める場合だけ：
+
+amount_readable=true
+
+amount_yenに円単位整数を入れる。
+
+
+8万円 → 80000
+
+10万円 → 100000
+
+12万円 → 120000
+
+
+欄に記入はあるが
+金額が不鮮明：
+
+handwriting_visible=true
+amount_readable=false
+uncertain=true
+""",
+
+                MonthlyCreditResult
+            )
+
+
+        if monthly_credit:
+
+            if (
+                monthly_credit.uncertain
+                or not monthly_credit.exact_field_located
+            ):
 
                 st.warning(
                     "🔍 月あたりクレジット支払額：要確認"
                 )
 
-            elif not household.monthly_credit_has_entry:
+            elif not monthly_credit.handwriting_visible:
 
                 st.error(
                     "❌ 月あたりクレジット支払額：未記入"
                 )
 
-            elif household.monthly_credit_yen is None:
+            elif (
+                not monthly_credit.amount_readable
+                or monthly_credit.amount_yen is None
+            ):
 
                 st.warning(
-                    "🔍 月あたりクレジット支払額：金額要確認"
+                    "🔍 月あたりクレジット支払額："
+                    "記入あり・金額要確認"
                 )
 
-            elif household.monthly_credit_yen > 100000:
+            elif monthly_credit.amount_yen > 100000:
 
                 st.error(
-                    "⚠️ 世帯主のクレジット月額："
-                    f"{household.monthly_credit_yen:,}円 "
+                    "⚠️ 月あたりクレジット支払額："
+                    f"{monthly_credit.amount_yen:,}円 "
                     "（10万円超）"
                 )
 
             else:
 
                 st.success(
-                    "✅ 世帯主のクレジット月額："
-                    f"{household.monthly_credit_yen:,}円"
+                    "✅ 月あたりクレジット支払額："
+                    f"{monthly_credit.amount_yen:,}円"
                 )
 
 
-        # ----------------------------------------------------
-        # 関係者情報
-        # ----------------------------------------------------
+        # ====================================================
+        # 関係者
+        # ====================================================
 
         if relation_enabled:
 
-            with st.spinner("① 関係者情報を確認中..."):
+            with st.spinner(
+                "関係者情報を確認中..."
+            ):
 
-                relation = safe_analysis(
-                    p1_bytes,
+                relation = safe_ask(
 
-                    COMMON
-                    + PAGE1_STRUCTURE
-                    + """
-【対象】
+                    p1,
 
+                    COMMON + PAGE1 + """
 D：関係者情報ブロックだけ。
 
-本人情報を絶対に流用しないでください。
+本人欄から情報を流用禁止。
 
 確認：
 
-・氏名
-・氏名フリガナ
-・性別
-・生年月日
-・ご契約者との関係
-・ご住所
-・ご住所の郵便番号
-・ご住居
-・連絡先
-・税込年収
-・雇用形態
-・勤務年数
-・給料日
-・会社名
-・所在地
-・所在地の郵便番号
-・所在地の電話番号
+氏名
+氏名フリガナ
+性別
+生年月日
+ご契約者との関係
+住所
+郵便番号
+住居
+連絡先
+税込年収
+勤務年数
+給料日
+会社名
+所在地
+所在地郵便番号
+所在地電話番号
 
-住所は実住所でも
-「同上」でも記入ありとしてOK。
+雇用形態だけは
+別判定するのでここでは扱わない。
 
-ただし郵便番号は
-別途記入が必要です。
+関係者住所は、
+
+実際の住所
+または
+「同上」
+
+のどちらでも記入あり。
+
+ただし郵便番号は別途必要。
 """,
-                    RelationResult
+
+                    RelationBasicResult
                 )
 
 
             if relation:
 
-                st.subheader("関係者情報")
+                st.subheader(
+                    "関係者情報"
+                )
 
                 show_field(
                     "関係者情報・氏名",
@@ -1685,10 +1970,138 @@ D：関係者情報ブロックだけ。
                     relation.annual_income
                 )
 
-                show_circle(
-                    "関係者情報・雇用形態",
-                    relation.employment_type
+
+            # ================================================
+            # ★ 関係者 雇用形態専用
+            # ================================================
+
+            with st.spinner(
+                "関係者の雇用形態を確認中..."
+            ):
+
+                relation_emp = safe_ask(
+
+                    p1,
+
+                    COMMON + PAGE1 + """
+今回見るのは
+
+D：関係者情報ブロック内の
+「雇用形態」
+
+だけです。
+
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+本人勤務先の雇用形態ではありません。
+
+必ず最初に
+
+「関係者情報」
+
+という大きなブロックを特定してください。
+
+その中にある
+
+「雇用形態」
+
+という印刷ラベルを探します。
+
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+今回は、
+
+どの職種が選ばれているかを
+読み取ることより、
+
+「関係者の雇用形態欄の
+選択肢領域に手書き○が
+1つ以上存在するか」
+
+を最優先で確認してください。
+
+
+手書き○が存在すれば
+
+circle_visible=true
+
+です。
+
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+○が印刷文字に重なっていても
+選択ありです。
+
+○の中の文字を
+完全にOCRできなくても構いません。
+
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+【絶対禁止】
+
+本人の雇用形態の○
+本人の業種の○
+本人の性別
+関係者の性別
+関係者の住居
+
+などを流用禁止。
+
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+関係者の雇用形態領域に
+○らしい手書き筆跡が見えるが
+確信できない場合：
+
+uncertain=true
+
+明確に○がある場合：
+
+field_located=true
+circle_visible=true
+uncertain=false
+
+本当に○がない場合だけ：
+
+field_located=true
+circle_visible=false
+uncertain=false
+""",
+
+                    RelationEmploymentResult
                 )
+
+
+            if relation_emp:
+
+                if (
+                    relation_emp.uncertain
+                    or not relation_emp.field_located
+                ):
+
+                    st.warning(
+                        "🔍 関係者情報・雇用形態：要確認"
+                    )
+
+                elif relation_emp.circle_visible:
+
+                    st.success(
+                        "✅ 関係者情報・雇用形態：選択あり"
+                    )
+
+                else:
+
+                    st.error(
+                        "❌ 関係者情報・雇用形態：選択なし"
+                    )
+
+
+            if relation:
 
                 show_field(
                     "関係者情報・勤務年数",
@@ -1721,52 +2134,56 @@ D：関係者情報ブロックだけ。
                 )
 
 
-        # ----------------------------------------------------
+        # ====================================================
         # 銀行
-        # ----------------------------------------------------
+        # ====================================================
 
-        with st.spinner("① 銀行口座を確認中..."):
+        with st.spinner(
+            "銀行口座を確認中..."
+        ):
 
-            bank = safe_analysis(
-                p1_bytes,
+            bank = safe_ask(
 
-                COMMON
-                + PAGE1_STRUCTURE
-                + """
-【対象】
+                p1,
 
-E：銀行口座情報。
+                COMMON + PAGE1 + """
+E：銀行口座だけを確認。
 
 ゆうちょ銀行側、
 または
 ゆうちょ銀行以外の銀行側、
 
-どちらか一方に
-口座情報の記入が存在すればOK。
+どちらか一方に必要な口座記入があればOK。
 
-両方を必須にしないでください。
+両方を必須にしない。
 
-さらに下部の
-「口座名義人」のフリガナ欄に
-手書き記入があるか確認してください。
+さらに、
+下部の「口座名義人」に対応する
+フリガナ欄を確認。
 """,
+
                 BankResult
             )
 
 
         if bank:
 
-            st.subheader("銀行口座")
+            st.subheader(
+                "銀行口座"
+            )
 
-            if bank.uncertain:
+            if (
+                bank.uncertain
+                or not bank.section_located
+            ):
 
                 st.warning(
                     "🔍 銀行口座：要確認"
                 )
 
             elif (
-                bank.japan_post_side_has_entry
-                or bank.other_bank_side_has_entry
+                bank.japan_post_has_entry
+                or bank.other_bank_has_entry
             ):
 
                 st.success(
@@ -1779,58 +2196,60 @@ E：銀行口座情報。
                     "❌ 銀行口座：未記入"
                 )
 
+
             show_field(
                 "口座名義人フリガナ",
                 bank.account_holder_furigana
             )
 
 
-        # ----------------------------------------------------
-        # 契約情報
-        # ----------------------------------------------------
+        # ====================================================
+        # 契約関連
+        # ====================================================
 
-        with st.spinner("① 契約情報を確認中..."):
+        with st.spinner(
+            "契約情報を確認中..."
+        ):
 
-            contract_info = safe_analysis(
-                p1_bytes,
+            contract = safe_ask(
 
-                COMMON
-                + PAGE1_STRUCTURE
-                + """
-【対象】
+                p1,
 
-F：契約関連情報。
+                COMMON + PAGE1 + """
+F：契約関連。
 
-次の正確な欄だけを確認：
+確認するのは正確に次の2つ。
 
-1. 役務提供期間
+・役務提供期間
 
-2.
-「特定商取引法第42条第2項
-又は第3項書面の受領年月日」
+・特定商取引法第42条第2項
+または第3項書面の受領年月日
 
-2については
-年・月・日が指定欄に
-記入されている必要があります。
+受領年月日は
+その指定欄の
+年・月・日が記入されているか確認。
 
-別の日付を流用しないでください。
+別の日付を流用禁止。
 """,
-                ContractInfoResult
+
+                ContractResult
             )
 
 
-        if contract_info:
+        if contract:
 
-            st.subheader("契約情報")
+            st.subheader(
+                "契約情報"
+            )
 
             show_field(
                 "役務提供期間",
-                contract_info.service_period
+                contract.service_period
             )
 
             show_field(
                 "特定商取引法第42条第2項又は第3項書面の受領年月日",
-                contract_info.article42_receipt_date
+                contract.article42_receipt_date
             )
 
 
@@ -1840,43 +2259,46 @@ F：契約関連情報。
 
     if page2_file:
 
-        st.header("② 役務申込書・指導内容")
+        p2 = prepare_image(
+            Image.open(page2_file)
+        )
 
-        p2_image = Image.open(page2_file)
-        p2_bytes = prepare_image(p2_image)
+        st.header(
+            "② 役務申込書・指導内容"
+        )
 
 
-        # ----------------------------------------------------
-        # 保護者フリガナ
-        # ----------------------------------------------------
+        # ====================================================
+        # 保護者
+        # ====================================================
 
-        with st.spinner("② 保護者情報を確認中..."):
+        with st.spinner(
+            "保護者情報を確認中..."
+        ):
 
-            guardian = safe_analysis(
-                p2_bytes,
+            guardian = safe_ask(
 
-                COMMON
-                + PAGE2_STRUCTURE
-                + """
-【対象】
+                p2,
 
-保護者氏名に対応する
-「保護者氏名フリガナ」欄だけ。
+                COMMON + PAGE2 + """
+「保護者氏名」に直接対応する
+フリガナ欄だけを確認。
 
-指定欄に
-手書き文字が存在するか確認。
+フリガナ欄に
+手書き文字が存在すればOK。
 
-読み方の一致は審査しません。
-
-他のフリガナを使用禁止。
+他の氏名フリガナを流用禁止。
 """,
+
                 GuardianResult
             )
 
 
         if guardian:
 
-            st.subheader("保護者情報")
+            st.subheader(
+                "保護者情報"
+            )
 
             show_field(
                 "保護者氏名フリガナ",
@@ -1884,53 +2306,59 @@ F：契約関連情報。
             )
 
 
-        # ----------------------------------------------------
-        # Page2住所
-        # ----------------------------------------------------
+        # ====================================================
+        # PAGE2住所
+        # ====================================================
 
-        with st.spinner("② ご住所・連絡先を確認中..."):
+        with st.spinner(
+            "住所を確認中..."
+        ):
 
-            p2_address = safe_analysis(
-                p2_bytes,
+            p2_address = safe_ask(
 
-                COMMON
-                + PAGE2_STRUCTURE
-                + """
-【対象】
+                p2,
 
-「ご住所・連絡先」の住所欄。
+                COMMON + PAGE2 + """
+「ご住所・連絡先」の
+住所欄だけを確認。
 
-次の両方を確認：
+必要条件は2つ。
 
 1.
-住所の手書き文字列に
+住所文字列に
 都道府県名が明示されている。
 
 市区町村から推測禁止。
 
 2.
-住所欄付近に印刷された
-「都・道・府・県」のうち、
-実際の都道府県に対応するものに
+印刷された
+「都・道・府・県」のうち
+その住所に対応するものに
 手書き○がある。
 
-住所文字列と○の両方が必要です。
+両方を別々に確認。
 """,
+
                 Page2AddressResult
             )
 
 
         if p2_address:
 
-            st.subheader("ご住所・連絡先")
+            st.subheader(
+                "ご住所・連絡先"
+            )
 
-            if p2_address.uncertain:
+            if (
+                p2_address.uncertain
+                or not p2_address.field_located
+            ):
 
                 st.warning(
                     "🔍 ご住所：要確認"
                 )
 
-            elif not p2_address.address_has_entry:
+            elif not p2_address.has_entry:
 
                 st.error(
                     "❌ ご住所：未記入"
@@ -1938,7 +2366,7 @@ F：契約関連情報。
 
             else:
 
-                if p2_address.prefecture_name_explicit:
+                if p2_address.prefecture_explicit:
 
                     st.success(
                         "✅ ご住所：都道府県名あり"
@@ -1947,17 +2375,17 @@ F：契約関連情報。
                 else:
 
                     st.error(
-                        "❌ ご住所：都道府県名の記入なし"
+                        "❌ ご住所：都道府県名なし"
                     )
 
 
-                if not p2_address.prefecture_mark_field_located:
+                if not p2_address.prefecture_selector_located:
 
                     st.warning(
-                        "🔍 都・道・府・県の○：要確認"
+                        "🔍 都・道・府・県：要確認"
                     )
 
-                elif p2_address.correct_prefecture_mark_circled:
+                elif p2_address.appropriate_prefecture_circle:
 
                     st.success(
                         "✅ 都・道・府・県：○あり"
@@ -1970,45 +2398,45 @@ F：契約関連情報。
                     )
 
 
-        # ----------------------------------------------------
+        # ====================================================
         # 指導対象A
-        # ----------------------------------------------------
+        # ====================================================
 
-        with st.spinner("② 指導対象Aを確認中..."):
+        with st.spinner(
+            "指導対象Aを確認中..."
+        ):
 
-            target_a = safe_analysis(
-                p2_bytes,
+            target = safe_ask(
 
-                COMMON
-                + PAGE2_STRUCTURE
-                + """
-【対象】
+                p2,
 
-右上にある
-「指導対象A」の
-「有」という印刷選択肢。
+                COMMON + PAGE2 + """
+右上の
+「指導対象A」を特定。
 
-「有」に実際に
-手書き○がある場合のみ
-yes_circled=true。
+そのAに対応する
+印刷された「有」に
+実際の手書き○があるかだけ確認。
 
 他の○を流用禁止。
 """,
+
                 TargetAResult
             )
 
 
-        if target_a:
+        if target:
 
-            st.subheader("指導対象A")
-
-            if target_a.uncertain or not target_a.field_located:
+            if (
+                target.uncertain
+                or not target.field_located
+            ):
 
                 st.warning(
-                    "🔍 指導対象A「有」：要確認"
+                    "🔍 指導対象A：要確認"
                 )
 
-            elif target_a.yes_circled:
+            elif target.yes_circle_visible:
 
                 st.success(
                     "✅ 指導対象A：「有」に○あり"
@@ -2021,93 +2449,118 @@ yes_circled=true。
                 )
 
 
-        # ----------------------------------------------------
+        # ====================================================
         # 公・国・私
-        # ----------------------------------------------------
+        # ====================================================
 
-        with st.spinner("② 学校区分を確認中..."):
+        with st.spinner(
+            "学校区分を確認中..."
+        ):
 
-            school = safe_analysis(
-                p2_bytes,
+            school = safe_ask(
 
-                COMMON
-                + PAGE2_STRUCTURE
-                + """
-【対象】
+                p2,
 
+                COMMON + PAGE2 + """
 右上の学校情報にある
-「公・国・私」の3選択肢だけ。
+
+公
+国
+私
+
+の3つだけを確認。
 
 それぞれに
-実際の手書き○があるか確認。
+手書き○があるか判断。
 
 性別、
-指導対象Aの「有」、
-その他の○を使用禁止。
+指導対象A、
+学校種別以外の○を
+使用禁止。
 """,
-                SchoolCategoryResult
+
+                SchoolResult
             )
 
 
         if school:
 
-            st.subheader("学校区分")
+            school_choices = [
 
-            school_selected = [
                 name
+
                 for name, value in [
-                    ("公", school.public_circled),
-                    ("国", school.national_circled),
-                    ("私", school.private_circled),
+
+                    (
+                        "公",
+                        school.public_circle
+                    ),
+
+                    (
+                        "国",
+                        school.national_circle
+                    ),
+
+                    (
+                        "私",
+                        school.private_circle
+                    )
+
                 ]
+
                 if value
             ]
 
-            if school.uncertain or not school.field_located:
+
+            if (
+                school.uncertain
+                or not school.field_located
+            ):
 
                 st.warning(
                     "🔍 公・国・私：要確認"
                 )
 
-            elif len(school_selected) == 0:
+            elif len(school_choices) == 0:
 
                 st.error(
                     "❌ 公・国・私：選択なし"
                 )
 
-            elif len(school_selected) > 1:
+            elif len(school_choices) > 1:
 
                 st.error(
-                    "⚠️ 公・国・私：複数選択 "
-                    + " / ".join(school_selected)
+                    "❌ 公・国・私：複数選択 "
+                    + " / ".join(school_choices)
                 )
 
             else:
 
                 st.success(
                     "✅ 公・国・私："
-                    + school_selected[0]
+                    + school_choices[0]
                 )
 
 
-        # ----------------------------------------------------
+        # ====================================================
         # コース
-        # ----------------------------------------------------
+        # ====================================================
 
-        with st.spinner("② コース名を確認中..."):
+        with st.spinner(
+            "コース名を確認中..."
+        ):
 
-            course = safe_analysis(
-                p2_bytes,
+            course = safe_ask(
 
-                COMMON
-                + PAGE2_STRUCTURE
-                + """
-【対象】
+                p2,
 
-印刷された「コース名」の
-すぐ横の指定記入欄だけ。
+                COMMON + PAGE2 + """
+印刷された
+「コース名」
 
-この欄に
+のすぐ横の指定欄だけを見る。
+
+この指定欄に、
 
 週1
 かつ
@@ -2116,18 +2569,23 @@ yes_circled=true。
 という意味の記入が必要。
 
 近くにある
-「4回/月」だけでは
-条件を満たしません。
+
+4回/月
+
+だけを見て
+条件達成としてはいけません。
 """,
+
                 CourseResult
             )
 
 
         if course:
 
-            st.subheader("コース名")
-
-            if course.uncertain or not course.field_located:
+            if (
+                course.uncertain
+                or not course.field_located
+            ):
 
                 st.warning(
                     "🔍 コース名：要確認"
@@ -2140,8 +2598,8 @@ yes_circled=true。
                 )
 
             elif (
-                course.weekly_once_present
-                and course.ninety_minutes_present
+                course.weekly_once
+                and course.ninety_minutes
             ):
 
                 st.success(
@@ -2152,98 +2610,109 @@ yes_circled=true。
 
                 st.error(
                     "❌ コース名："
-                    "「週1・90分」を確認できません"
+                    "週1・90分を確認できません"
                 )
 
 
-        # ----------------------------------------------------
-        # 日付・期間
-        # ----------------------------------------------------
+        # ====================================================
+        # 初回指導日 / 役務提供期間
+        # ====================================================
 
-        with st.spinner("② 日付・期間を確認中..."):
+        with st.spinner(
+            "日付・期間を確認中..."
+        ):
 
-            p2_dates = safe_analysis(
-                p2_bytes,
+            dates = safe_ask(
 
-                COMMON
-                + PAGE2_STRUCTURE
-                + """
-【対象】
+                p2,
+
+                COMMON + PAGE2 + """
+確認するのは、
 
 ・初回指導日
-・役務提供期間 A
+・役務提供期間A
+
+だけ。
 
 役務提供期間は
-A行に記入があればよく、
-B行の空欄は記入漏れではありません。
+A行だけが対象。
+
+B行が空欄でも問題ありません。
 """,
+
                 Page2DatesResult
             )
 
 
-        if p2_dates:
-
-            st.subheader("日付・期間")
+        if dates:
 
             show_field(
                 "初回指導日",
-                p2_dates.first_instruction_date
+                dates.first_instruction_date
             )
 
             show_field(
-                "役務提供期間 A",
-                p2_dates.service_period_a
+                "役務提供期間A",
+                dates.service_period_a
             )
 
 
-        # ----------------------------------------------------
+        # ====================================================
         # 受領サイン
-        # ----------------------------------------------------
+        # ====================================================
 
-        with st.spinner("② 受領サインを確認中..."):
+        with st.spinner(
+            "受領サインを確認中..."
+        ):
 
-            receipt = safe_analysis(
-                p2_bytes,
+            receipt = safe_ask(
 
-                COMMON
-                + PAGE2_STRUCTURE
-                + """
-【対象】
+                p2,
 
-書類最上部右側。
+                COMMON + PAGE2 + """
+今回見るのは
+受領サインだけ。
 
-「書面交付日」と同じ上部バーにある
+書類の最上部右側。
+
+「書面交付日」と
+同じ上部バーにある
 
 「受領サイン →」
 
-を探してください。
+を探す。
 
-矢印のすぐ右側の指定欄だけを確認。
+矢印の直後にある
+指定記入領域だけを確認。
 
-そこに手書き署名がある場合だけ
-has_signature=true。
+そこに手書き署名があれば
 
-保護者氏名、
-契約者氏名、
-指導対象者氏名、
-その他の署名を
-絶対に使用禁止。
+signature_visible=true。
+
+保護者氏名
+契約者氏名
+生徒氏名
+その他の署名
+
+を流用禁止。
 """,
+
                 ReceiptResult
             )
 
 
         if receipt:
 
-            st.subheader("受領サイン")
-
-            if receipt.uncertain or not receipt.field_located:
+            if (
+                receipt.uncertain
+                or not receipt.field_located
+            ):
 
                 st.warning(
                     "🔍 受領サイン：要確認"
                 )
 
-            elif receipt.has_signature:
+            elif receipt.signature_visible:
 
                 st.success(
                     "✅ 受領サイン：記入あり"
@@ -2256,112 +2725,141 @@ has_signature=true。
                 )
 
 
-        # ----------------------------------------------------
+        # ====================================================
         # 数量
-        # ----------------------------------------------------
+        # ====================================================
 
-        with st.spinner("② 数量を確認中..."):
+        with st.spinner(
+            "数量を確認中..."
+        ):
 
-            quantity = safe_analysis(
-                p2_bytes,
+            quantity = safe_ask(
 
-                COMMON
-                + PAGE2_STRUCTURE
-                + """
-【対象】
+                p2,
 
-教材・数量表だけ。
+                COMMON + PAGE2 + """
+教材・数量表だけを確認。
 
-まず印刷された
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+まず表の印刷された列見出し
+
 「数量」
-という列見出しを特定してください。
 
-各適用行について、
+を必ず特定。
 
-1.
-数量列より左側の
-同じ行にある手書き整数を
-horizontal_values に入れる。
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+各対象行について、
+
+数量列より左側にある
+同じ行の手書き数量要素を
+
+horizontal_values
+
+に入れる。
+
 
 例：
 
-1、1、1
+1 1 1
 
 なら
 
 [1,1,1]
 
 
-2.
+━━━━━━━━━━━━━━━━━━━━━━
+
+次に、
+
 同じ行の
-「数量」列セルそのものを確認。
-
-そのセルに書かれた数字だけを
-written_quantity に入れる。
+「数量」列セルそのものを見る。
 
 
-数量セルが空欄なら、
+そこに手書き数字があるなら
 
-written_quantity=""
+quantity_handwriting_visible=true
 
-quantity_box_has_handwriting=false
+written_quantityに
+その数字を入れる。
 
+
+空欄なら
+
+quantity_handwriting_visible=false
+written_quantity=null
+
+
+━━━━━━━━━━━━━━━━━━━━━━
 
 【絶対禁止】
 
-数量列より右側の
+数量を自分で計算して
+written_quantityに補完禁止。
 
-・各単価
-・小計
-・合計
-・金額
-
-を数量として使用禁止。
+written_quantityは
+実際に数量セルに書かれている数字だけ。
 
 
-特に、
+━━━━━━━━━━━━━━━━━━━━━━
+
+数量列より右側にある
+
+各単価
+小計
+合計
+金額
+
+は絶対に数量ではない。
+
+
+特に
 
 36000
 108000
 648000
 712800
 
-などの金額を
-数量として読み取ってはいけません。
+などを
+数量として使用禁止。
 
 
-横の数字から正しい数量を計算して
-written_quantity に補完することも禁止。
+━━━━━━━━━━━━━━━━━━━━━━
 
-written_quantity は
-実際の数量セルに書かれたものだけ。
+数量セルに筆跡があるが
+数字が読めない場合：
 
-
-適用行に手書き選択が見えるのに
-行を特定できない場合は
-uncertain=true。
+quantity_handwriting_visible=true
+written_quantity=null
+uncertain=true
 """,
+
                 QuantityResult
             )
 
 
         if quantity:
 
-            st.subheader("数量")
+            st.subheader(
+                "数量"
+            )
 
             if quantity.uncertain:
-
-                st.warning(
-                    "🔍 数量：要確認"
-                )
-
-            elif not quantity.table_located:
 
                 st.warning(
                     "🔍 数量表：要確認"
                 )
 
-            elif not quantity.applicable_rows_detected:
+            elif not quantity.table_located:
+
+                st.warning(
+                    "🔍 数量表を特定できません"
+                )
+
+            elif not quantity.applicable_rows_visible:
 
                 st.warning(
                     "🔍 数量：対象行を特定できません"
@@ -2381,10 +2879,27 @@ uncertain=true。
                         row.horizontal_values
                     )
 
-                    if (
-                        not row.quantity_box_has_handwriting
-                        or row.written_quantity.strip() == ""
-                    ):
+
+                    if row.uncertain:
+
+                        st.warning(
+                            f"🔍 {row.row_label}：要確認"
+                        )
+
+                        continue
+
+
+                    if not row.quantity_cell_located:
+
+                        st.warning(
+                            f"🔍 {row.row_label}："
+                            "数量欄を特定できません"
+                        )
+
+                        continue
+
+
+                    if not row.quantity_handwriting_visible:
 
                         st.error(
                             f"❌ {row.row_label}："
@@ -2395,42 +2910,34 @@ uncertain=true。
                         continue
 
 
-                    try:
-
-                        written = int(
-                            row.written_quantity
-                            .replace(",", "")
-                            .strip()
-                        )
-
-                    except Exception:
+                    if row.written_quantity is None:
 
                         st.warning(
                             f"🔍 {row.row_label}："
-                            "数量欄を正確に読み取れません"
+                            "数量欄に記入あり・数字要確認"
                         )
 
                         continue
 
 
-                    # 金額誤読防止
-                    if written >= 1000:
+                    # 金額列誤読の防御
+                    if row.written_quantity >= 1000:
 
                         st.warning(
                             f"🔍 {row.row_label}："
-                            f"数量欄を「{written}」と検出。"
-                            "金額列の誤読の可能性があるため要確認"
+                            f"{row.written_quantity}を検出。"
+                            "金額列の誤読の可能性あり"
                         )
 
                         continue
 
 
-                    if written == expected:
+                    if row.written_quantity == expected:
 
                         st.success(
                             f"✅ {row.row_label}："
                             f"横合計 {expected} / "
-                            f"数量 {written}"
+                            f"数量 {row.written_quantity}"
                         )
 
                     else:
@@ -2438,7 +2945,7 @@ uncertain=true。
                         st.error(
                             f"❌ {row.row_label}："
                             f"横合計 {expected} / "
-                            f"数量 {written}"
+                            f"数量 {row.written_quantity}"
                         )
 
 
@@ -2448,7 +2955,12 @@ uncertain=true。
 
     st.divider()
 
-    st.info(
-        "AIが「要確認」とした項目や、"
-        "提出前の最終確認は人が確認してください。"
+    st.success(
+        "チェック完了"
+    )
+
+    st.caption(
+        "🔍 要確認になった項目は、"
+        "AIが画像から確実に判断できなかった項目です。"
+        "提出前に人の目でも最終確認してください。"
     )
